@@ -97,6 +97,29 @@ impl WorkerHandle {
     }
 }
 
+/// RAII guard that clears the readiness flag when the worker thread exits.
+///
+/// On construction it marks the worker as ready; on drop (any exit path —
+/// normal completion, panic unwind, or early return) it clears the flag so
+/// that `/ready` returns 503, signalling the HTTP layer that inference is
+/// unavailable.
+struct ReadyGuard {
+    flag: Arc<AtomicBool>,
+}
+
+impl ReadyGuard {
+    fn arm(flag: Arc<AtomicBool>) -> Self {
+        flag.store(true, Ordering::SeqCst);
+        Self { flag }
+    }
+}
+
+impl Drop for ReadyGuard {
+    fn drop(&mut self) {
+        self.flag.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Start the inference worker thread, returning a handle for the HTTP layer.
 ///
 /// The worker thread is named `jev-inference` and runs on a dedicated OS
@@ -114,7 +137,7 @@ pub fn start(
     let worker = std::thread::Builder::new()
         .name("jev-inference".into())
         .spawn(move || {
-            if let Err(error) = run(jobs_rx, &ready_tx, &ready_writer, max_questions) {
+            if let Err(error) = run(jobs_rx, &ready_tx, ready_writer.clone(), max_questions) {
                 let _ = ready_tx.send(Err(InferenceError::internal(error.to_string())));
                 tracing::error!(%error, "inference worker stopped");
             }
@@ -137,7 +160,7 @@ pub fn start(
 fn run(
     jobs: mpsc::Receiver<Job>,
     ready: &mpsc::SyncSender<Result<(), InferenceError>>,
-    worker_ready: &AtomicBool,
+    worker_ready: Arc<AtomicBool>,
     max_questions: usize,
 ) -> Result<()> {
     let backend = crate::init::init_backend()?;
@@ -145,7 +168,9 @@ fn run(
     let (model, template) = crate::init::load_model(&backend, &config)?;
     let mut context = crate::init::build_context(&backend, &model, &config)?;
     ready.send(Ok(())).ok();
-    worker_ready.store(true, Ordering::SeqCst);
+    // Arm the readiness guard so /ready returns 200. The guard's Drop
+    // implementation clears the flag on any exit path, including panic unwind.
+    let _guard = ReadyGuard::arm(worker_ready);
 
     while let Ok(job) = jobs.recv() {
         // Enforce question count cap before any processing.
