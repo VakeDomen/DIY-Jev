@@ -9,10 +9,9 @@ use serde_json::Value;
 
 /// Shared-cache equivalence test.
 ///
-/// Verifies that evaluating questions together (using the shared-prefix KV cache
-/// optimization) produces the same probability distributions as evaluating each
-/// question alone. This is an opt-in GPU test — set `JEV_TEST_MODEL=/path/to/model.gguf`
-/// to run it.
+/// Verifies that evaluating questions together produces the same probability
+/// distributions as evaluating each question alone. This is an opt-in GPU test
+/// — set `JEV_TEST_MODEL=/path/to/model.gguf` to run it.
 ///
 /// Currently uses a relaxed tolerance (10%) to identify cases where the shared-cache
 /// path diverges, which likely indicates a bug in the KV cache rollback or position
@@ -146,7 +145,8 @@ fn shared_cache_matches_individual_inference() {
         },
     ];
 
-    let tolerance = 0.10; // 10% — intentionally relaxed to investigate
+    let tolerance = 0.001; // Each question is decoded independently, so results
+                           // must match to within floating-point precision.
 
     for scenario in &scenarios {
         eprintln!("\n═══ Scenario: {} ═══", scenario.name);
@@ -202,10 +202,9 @@ fn shared_cache_matches_individual_inference() {
 
             assert!(
                 max_diff <= tolerance,
-                "{}/{}: max probability difference {max_diff:.6} exceeds {}% tolerance",
+                "{}/{}: max probability difference {max_diff:.6} exceeds tolerance {tolerance}",
                 scenario.name,
                 qname,
-                tolerance * 100.0,
             );
         }
     }
