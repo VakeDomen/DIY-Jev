@@ -22,6 +22,10 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/ContentTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '502':
@@ -39,6 +43,10 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/ContentTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '502':
@@ -56,6 +64,10 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/ContentTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '502':
@@ -73,6 +85,10 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '413':
+          $ref: '#/components/responses/ContentTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMedia'
         '422':
           $ref: '#/components/responses/UnprocessableEntity'
         '502':
@@ -122,6 +138,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    ContentTooLarge:
+      description: Request body exceeds the 2 MB limit.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnsupportedMedia:
+      description: Request must use application/json content-type.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
     UnprocessableEntity:
       description: Request is valid JSON but fails semantic validation.
       content:
@@ -151,6 +179,7 @@ components:
     EvaluateInput:
       type: object
       required: [state, questions]
+      additionalProperties: true
       properties:
         state:
           description: Shared state evaluated by every question.
@@ -163,10 +192,13 @@ components:
     CloudflareEvaluateInput:
       type: object
       required: [input]
+      additionalProperties: true
       properties:
         model:
-          type: string
-          example: typesafe/jev
+          oneOf:
+            - type: string
+              example: typesafe/jev
+            - type: 'null'
         input:
           $ref: '#/components/schemas/EvaluateInput'
     Question:
@@ -183,17 +215,26 @@ components:
     NoulQuestion:
       type: object
       required: [type, instructions]
+      additionalProperties: true
       properties:
         type:
           const: noul
         instructions:
-          type: string
-          minLength: 1
+          description: |
+            Prompt instruction. May be a string, an object (rendered as JSON),
+            or an array (rendered as a bullet list).
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: object
+            - type: array
+              items: {}
         criteria:
           type: object
           required: ['true', 'false']
           minProperties: 2
           maxProperties: 2
+          additionalProperties: true
           properties:
             'true':
               type: string
@@ -204,12 +245,20 @@ components:
     ChoiceQuestion:
       type: object
       required: [type, instructions, criteria]
+      additionalProperties: true
       properties:
         type:
           const: choice
         instructions:
-          type: string
-          minLength: 1
+          description: |
+            Prompt instruction. May be a string, an object (rendered as JSON),
+            or an array (rendered as a bullet list).
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: object
+            - type: array
+              items: {}
         criteria:
           type: object
           minProperties: 2
@@ -220,12 +269,20 @@ components:
     ScoreQuestion:
       type: object
       required: [type, instructions, criteria]
+      additionalProperties: true
       properties:
         type:
           const: score
         instructions:
-          type: string
-          minLength: 1
+          description: |
+            Prompt instruction. May be a string, an object (rendered as JSON),
+            or an array (rendered as a bullet list).
+          oneOf:
+            - type: string
+              minLength: 1
+            - type: object
+            - type: array
+              items: {}
         criteria:
           type: array
           minItems: 2
@@ -235,6 +292,7 @@ components:
     EvaluateResponse:
       type: object
       required: [model, answers, usage]
+      additionalProperties: true
       properties:
         model:
           type: string
@@ -259,6 +317,7 @@ components:
     NoulAnswer:
       type: object
       required: [type, noul]
+      additionalProperties: true
       properties:
         type:
           const: noul
@@ -269,6 +328,7 @@ components:
     ChoiceAnswer:
       type: object
       required: [type, choice, confidence, probabilities]
+      additionalProperties: true
       properties:
         type:
           const: choice
@@ -288,6 +348,7 @@ components:
     ScoreAnswer:
       type: object
       required: [type, score, confidence, legend, probabilities]
+      additionalProperties: true
       properties:
         type:
           const: score
@@ -313,6 +374,7 @@ components:
     Usage:
       type: object
       required: [input_tokens, output_tokens]
+      additionalProperties: true
       properties:
         input_tokens:
           type: integer
@@ -323,6 +385,7 @@ components:
     Error:
       type: object
       required: [error]
+      additionalProperties: true
       properties:
         error:
           type: string
