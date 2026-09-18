@@ -83,9 +83,20 @@ fn continuation_tokens(
 //  SCORING
 // ===========================================================================
 
-/// Compute the log-probability of a single token given the full-vocabulary
-/// logits at the current position.
-fn token_log_prob(logits: &[f32], token: LlamaToken) -> Result<f32, InferenceError> {
+/// Numerically stable log-partition (log-sum-exp) over the full vocabulary.
+fn log_partition(logits: &[f32]) -> f32 {
+    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    max + logits
+        .iter()
+        .map(|&x| (x - max).exp())
+        .sum::<f32>()
+        .ln()
+}
+
+/// Compute the log-probability of a single token given already-computed
+/// log-partition `z`.
+#[inline]
+fn token_log_prob_from_z(logits: &[f32], z: f32, token: LlamaToken) -> Result<f32, InferenceError> {
     let token_id = token.0 as usize;
     if token_id >= logits.len() {
         return Err(InferenceError::internal(format!(
@@ -94,53 +105,134 @@ fn token_log_prob(logits: &[f32], token: LlamaToken) -> Result<f32, InferenceErr
             logits.len()
         )));
     }
-    // Numerically stable log-softmax over the full vocabulary.
-    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let exp_sum: f32 = logits.iter().map(|&x| (x - max).exp()).sum();
-    let log_z = max + exp_sum.ln();
-    Ok(logits[token_id] - log_z)
+    Ok(logits[token_id] - z)
 }
 
-/// Score every token of a single candidate continuation under the model.
+/// Decode the shared prompt once, assigning every token to all candidate
+/// sequence IDs.  After this, all sequences share the exact same KV state
+/// at the prompt boundary.
+fn decode_shared_prompt(
+    ctx: &mut LlamaContext<'_>,
+    tokens: &[LlamaToken],
+    seq_ids: &[i32],
+) -> Result<(), InferenceError> {
+    if seq_ids.is_empty() {
+        return Err(InferenceError::internal("no sequence IDs for shared prompt"));
+    }
+    let chunk_size = ctx.n_batch() as usize;
+
+    // Reusable batch large enough for one chunk, up to n_seq_max.
+    let max_seq = seq_ids.len();
+    let mut batch = LlamaBatch::new(chunk_size, max_seq as i32);
+
+    for (chunk_index, chunk) in tokens.chunks(chunk_size).enumerate() {
+        batch.clear();
+        let offset = chunk_index * chunk_size;
+
+        for (index, &token) in chunk.iter().enumerate() {
+            let absolute = offset + index;
+            let position = i32::try_from(absolute)
+                .map_err(|e| InferenceError::internal(format!("position overflow: {e}")))?;
+            let is_last = absolute + 1 == tokens.len();
+
+            batch
+                .add(token, position, seq_ids, is_last)
+                .map_err(|e| InferenceError::internal(format!("batch add failed: {e}")))?;
+        }
+
+        ctx.decode(&mut batch)
+            .map_err(|e| InferenceError::backend(format!("prompt decode failed: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Score all candidates in a batched fashion.
 ///
-/// Returns the **mean** log-probability over the continuation tokens (the
-/// per-token average) so that answers of different lengths can be compared
-/// fairly.  The raw sum is computed as well; callers that want `sum` instead
-/// can multiply the mean by the continuation length.
-fn score_candidate(
+/// 1. ONE shared prompt prefill (all seq IDs get every prompt token).
+/// 2. Score token #0 of every candidate from the shared logits (reuse
+///    log-partition across candidates since logits are identical).
+/// 3. For each subsequent depth, batch-decode the current token of every
+///    active (still-alive) candidate, then score the next token from the
+///    resulting per-sequence logit rows.
+///
+/// Returns mean log-probability for each candidate.
+fn score_candidates(
     ctx: &mut LlamaContext<'_>,
     prompt_tokens: &[LlamaToken],
-    candidate_tokens: &[LlamaToken],
-) -> Result<f32, InferenceError> {
+    candidates: &[Vec<LlamaToken>],
+) -> Result<Vec<f32>, InferenceError> {
+    let n = candidates.len();
+    if n == 0 {
+        return Err(InferenceError::internal("no candidates"));
+    }
+
+    let seq_ids: Vec<i32> = (0..n).map(|i| i as i32).collect();
     ctx.clear_kv_cache();
 
-    // Prefill the prompt.  After this, logits describe P(next | prompt).
-    decode_tokens(ctx, prompt_tokens, 0, true)?;
+    // ── 1. Shared prompt prefill ──────────────────────────────────────────
+    decode_shared_prompt(ctx, prompt_tokens, &seq_ids)?;
 
-    let mut total_log_prob = 0.0_f32;
-    let mut position = prompt_tokens.len();
-    let n = candidate_tokens.len();
+    let mut totals = vec![0.0_f32; n];
 
-    for (i, &token) in candidate_tokens.iter().enumerate() {
-        // Log-probability of this token under the current position.
-        let logits = ctx.get_logits();
-        total_log_prob += token_log_prob(logits, token)?;
+    // ── 2. Score token #0 for every candidate ─────────────────────────────
+    let prompt_logits = ctx.get_logits();
+    let z = log_partition(prompt_logits);
 
-        // Consume this token (unless it is the last) so the next position's
-        // logits reflect the updated context.
-        if i + 1 < n {
-            let mut batch = LlamaBatch::new(1, 1);
-            batch
-                .add(token, position as i32, &[0], true)
-                .map_err(|e| InferenceError::internal(format!("candidate batch add: {e}")))?;
-            ctx.decode(&mut batch)
-                .map_err(|e| InferenceError::backend(format!("candidate decode: {e}")))?;
-            position += 1;
+    for (i, tokens) in candidates.iter().enumerate() {
+        totals[i] = token_log_prob_from_z(prompt_logits, z, tokens[0])?;
+    }
+
+    // ── 3. Branch: depth-by-depth batched decode ──────────────────────────
+    let max_len = candidates.iter().map(Vec::len).max().unwrap_or(0);
+
+    // Reusable batch for branch tokens — one token per active candidate.
+    let mut branch_batch = LlamaBatch::new(n, 1);
+
+    for depth in 0..max_len.saturating_sub(1) {
+        // Which candidates have a token at this depth to consume?
+        let active: Vec<usize> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, tokens)| tokens.len() > depth + 1)
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if active.is_empty() {
+            break;
+        }
+
+        // Decode the current token (at position depth) for each active seq.
+        branch_batch.clear();
+        for &ci in &active {
+            let token = candidates[ci][depth];
+            branch_batch
+                .add(
+                    token,
+                    (prompt_tokens.len() + depth) as i32,
+                    &[ci as i32],
+                    true, // logits at this position
+                )
+                .map_err(|e| InferenceError::internal(format!("branch batch add: {e}")))?;
+        }
+
+        ctx.decode(&mut branch_batch)
+            .map_err(|e| InferenceError::backend(format!("branch decode: {e}")))?;
+
+        // Score the next token for each active sequence from its row.
+        for (batch_idx, &ci) in active.iter().enumerate() {
+            let logits = ctx.get_logits_ith(batch_idx as i32);
+            let z = log_partition(logits);
+            let next_token = candidates[ci][depth + 1];
+            totals[ci] += token_log_prob_from_z(logits, z, next_token)?;
         }
     }
 
-    // Mean log-probability: fairer across variable-length answers.
-    Ok(total_log_prob / n as f32)
+    // ── 4. Convert to mean log-probability ────────────────────────────────
+    Ok(totals
+        .into_iter()
+        .zip(candidates)
+        .map(|(sum, tokens)| sum / tokens.len() as f32)
+        .collect())
 }
 
 // ===========================================================================
@@ -255,17 +347,6 @@ fn prepare_plan(
     let prompt_tokens = model.str_to_token(&rendered, AddBos::Always)
         .map_err(|e| InferenceError::backend(format!("tokenisation failed for {name:?}: {e}")))?;
 
-    // Guard against context overflow: the prompt plus the longest candidate
-    // must fit.  We conservatively check the prompt alone here; the per-
-    // candidate score loop will fail at runtime if a continuation doesn't fit.
-    if prompt_tokens.len() >= ctx.n_ctx() as usize {
-        return Err(InferenceError::validation(format!(
-            "question {name:?} needs {} tokens, exceeding the {} token context",
-            prompt_tokens.len(),
-            ctx.n_ctx()
-        )));
-    }
-
     // Tokenise every candidate as a continuation of the rendered prompt.
     let candidate_tokens = descriptions
         .iter()
@@ -276,6 +357,22 @@ fn prepare_plan(
                 )))
         })
         .collect::<Result<Vec<_>, InferenceError>>()?;
+
+    // KV capacity check: the shared prefix consumes KV once, and each
+    // branch consumes (len - 1) additional KV slots (the last token of
+    // each candidate only needs its probability, not a consume step).
+    let required_kv = prompt_tokens.len()
+        + candidate_tokens
+            .iter()
+            .map(|c| c.len().saturating_sub(1))
+            .sum::<usize>();
+
+    if required_kv >= ctx.n_ctx() as usize {
+        return Err(InferenceError::validation(format!(
+            "question {name:?} needs {required_kv} KV slots, exceeding the {} token context",
+            ctx.n_ctx()
+        )));
+    }
 
     Ok(Plan {
         name,
@@ -290,19 +387,13 @@ fn prepare_plan(
 //  INFERENCE
 // ===========================================================================
 
-/// Phase 2 — Run a single plan: score each candidate and build the Answer.
+/// Phase 2 — Run a single plan: score all candidates with batched inference
+/// and build the Answer.
 fn run_plan(
     ctx: &mut LlamaContext<'_>,
     plan: &Plan,
 ) -> Result<Answer, InferenceError> {
-    let n = plan.candidate_tokens.len();
-    let mut scores = Vec::with_capacity(n);
-
-    for candidate in &plan.candidate_tokens {
-        let score = score_candidate(ctx, &plan.prompt_tokens, candidate)?;
-        scores.push(score);
-    }
-
+    let scores = score_candidates(ctx, &plan.prompt_tokens, &plan.candidate_tokens)?;
     let probabilities = softmax(&scores)?;
     Ok(make_answer(
         plan.question.clone(),
@@ -337,9 +428,6 @@ pub fn evaluate(
     for plan in &plans {
         let answer = run_plan(ctx, plan)?;
         total_input += plan.prompt_tokens.len();
-        // Each candidate scores its own full prefill + continuation steps.
-        // We report the prompt length as input tokens and a token-count
-        // placeholder for output.
         answers.insert(plan.name.clone(), answer);
     }
 
@@ -356,37 +444,6 @@ pub fn evaluate(
 // ===========================================================================
 //  LOW-LEVEL HELPERS
 // ===========================================================================
-
-/// Decode a sequence of tokens into the KV cache, optionally requesting
-/// logits only at the final position.
-fn decode_tokens(
-    ctx: &mut LlamaContext<'_>,
-    tokens: &[LlamaToken],
-    start_position: usize,
-    logits_at_end: bool,
-) -> Result<(), InferenceError> {
-    let chunk_size = ctx.n_batch() as usize;
-    for (chunk_index, chunk) in tokens.chunks(chunk_size).enumerate() {
-        let offset = start_position + chunk_index * chunk_size;
-        let mut batch = LlamaBatch::new(chunk.len(), 1);
-        for (index, token) in chunk.iter().enumerate() {
-            let position = i32::try_from(offset + index)
-                .map_err(|e| InferenceError::internal(format!("position overflow: {e}")))?;
-            let suffix_index = chunk_index * chunk_size + index;
-            batch
-                .add(
-                    *token,
-                    position,
-                    &[0],
-                    logits_at_end && suffix_index + 1 == tokens.len(),
-                )
-                .map_err(|e| InferenceError::internal(format!("batch add failed: {e}")))?;
-        }
-        ctx.decode(&mut batch)
-            .map_err(|e| InferenceError::backend(format!("llama decode failed: {e}")))?;
-    }
-    Ok(())
-}
 
 fn softmax(logits: &[f32]) -> Result<Vec<f32>, InferenceError> {
     if logits.iter().any(|&x| !x.is_finite()) {
@@ -529,11 +586,12 @@ mod tests {
     }
 
     #[test]
-    fn token_log_prob_is_well_behaved() {
+    fn token_log_prob_from_z_is_well_behaved() {
         // Uniform distribution → log_prob = -ln(vocab_size).
         let vocab_size = 4;
         let logits = vec![0.0_f32; vocab_size];
-        let lp = token_log_prob(&logits, LlamaToken(0)).unwrap();
+        let z = log_partition(&logits);
+        let lp = token_log_prob_from_z(&logits, z, LlamaToken(0)).unwrap();
         let expected = (1.0_f32 / vocab_size as f32).ln();
         assert!((lp - expected).abs() < 1e-6, "uniform log_prob should be {expected}, got {lp}");
     }
@@ -541,7 +599,19 @@ mod tests {
     #[test]
     fn token_log_prob_out_of_range() {
         let logits = vec![1.0, 2.0, 3.0];
-        assert!(token_log_prob(&logits, LlamaToken(100)).is_err());
+        assert!(token_log_prob_from_z(&logits, 0.0, LlamaToken(100)).is_err());
+    }
+
+    #[test]
+    fn log_partition_is_stable() {
+        // Wide dynamic range.
+        let logits = vec![1000.0_f32, -1000.0, 500.0];
+        let z = log_partition(&logits);
+        // Dominated by the max (1000), so z should be close to 1000 + ln(1 + small).
+        assert!((z - 1000.0).abs() < 1e-3, "log_partition should be near max, got {z}");
+        // Softmax sum should be 1.
+        let sum: f32 = logits.iter().map(|&x| (x - z).exp()).sum();
+        assert!((sum - 1.0).abs() < 1e-6, "softmax sum should be 1, got {sum}");
     }
 
     #[test]

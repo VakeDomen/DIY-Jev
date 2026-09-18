@@ -64,7 +64,7 @@ def test_json_error_envelope(url: str) -> int:
             "non-JSON body with wrong content-type",
             b"not json",
             "text/plain",
-            400,
+            415,
             "{",
         ),
         (

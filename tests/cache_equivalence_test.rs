@@ -38,6 +38,7 @@ fn shared_cache_matches_individual_inference() {
         batch_size: 512,
         max_queue: 64,
         max_questions: 100,
+        n_seq_max: 16,
     };
 
     let backend = init_backend().expect("failed to init llama backend");

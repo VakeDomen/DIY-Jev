@@ -11,6 +11,7 @@ pub struct Config {
     pub batch_size: u32,
     pub max_queue: usize,
     pub max_questions: usize,
+    pub n_seq_max: u32,
 }
 
 impl Config {
@@ -76,7 +77,20 @@ impl Config {
             Err(_) => 100,
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions)
+        let n_seq_max = match std::env::var("JEV_N_SEQ_MAX") {
+            Ok(value) => {
+                let parsed: u32 = value.parse().with_context(|| {
+                    format!("invalid JEV_N_SEQ_MAX: {value:?} is not a valid u32")
+                })?;
+                if parsed == 0 {
+                    anyhow::bail!("JEV_N_SEQ_MAX must be positive, got 0");
+                }
+                parsed
+            }
+            Err(_) => 16,
+        };
+
+        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -89,6 +103,7 @@ impl Config {
         batch_size: u32,
         max_queue: usize,
         max_questions: usize,
+        n_seq_max: u32,
     ) -> Result<Self> {
         if batch_size == 0 {
             anyhow::bail!("batch_size must be positive, got 0");
@@ -99,6 +114,9 @@ impl Config {
         if max_questions == 0 {
             anyhow::bail!("max_questions must be positive, got 0");
         }
+        if n_seq_max == 0 {
+            anyhow::bail!("n_seq_max must be positive, got 0");
+        }
         Ok(Self {
             model_path,
             bind_addr,
@@ -106,6 +124,7 @@ impl Config {
             batch_size,
             max_queue,
             max_questions,
+            n_seq_max,
         })
     }
 

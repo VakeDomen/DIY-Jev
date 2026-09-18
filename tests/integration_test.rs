@@ -15,11 +15,13 @@ fn config_rejects_zero_values() {
     let ctx = NonZeroU32::new(4096).unwrap();
 
     // Zero batch_size
-    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100, 16).is_err());
     // Zero max_queue
-    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100, 16).is_err());
     // Zero max_questions
-    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0, 16).is_err());
+    // Zero n_seq_max
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 100, 0).is_err());
 }
 
 /// Verify that Config::new accepts positive values.
@@ -28,11 +30,12 @@ fn config_accepts_positive_values() {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let ctx = NonZeroU32::new(4096).unwrap();
 
-    let config = Config::new("model".into(), addr, ctx, 512, 32, 50)
+    let config = Config::new("model".into(), addr, ctx, 512, 32, 50, 16)
         .expect("positive config values should be accepted");
     assert_eq!(config.batch_size, 512);
     assert_eq!(config.max_queue, 32);
     assert_eq!(config.max_questions, 50);
+    assert_eq!(config.n_seq_max, 16);
 }
 
 /// Verify that the full request → response serialization round-trips
