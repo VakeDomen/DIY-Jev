@@ -13,18 +13,20 @@ use crate::api::{Answer, EvaluateRequest, EvaluateResponse, Question, Usage};
 
 const SYSTEM_PROMPT: &str = "You are a decision model. Given a STATE and QUESTION, choose exactly one of the allowed options. Reply with only the option label and no explanation.";
 
-/// Resolve the internal label letters A-Z to their single-token IDs for a
-/// specific model, validating that each is a single token.
-fn resolve_label_tokens(model: &LlamaModel) -> Result<BTreeMap<String, LlamaToken>> {
-    let labels = internal_labels(26);
+/// Resolve a set of internal label strings to their single-token IDs for a
+/// specific model, validating that each maps to exactly one token.
+fn resolve_label_tokens(
+    model: &LlamaModel,
+    labels: &[String],
+) -> Result<BTreeMap<String, LlamaToken>> {
     labels
-        .into_iter()
+        .iter()
         .map(|label| {
-            let tokens = model.str_to_token(&label, AddBos::Never)?;
+            let tokens = model.str_to_token(label, AddBos::Never)?;
             if tokens.len() != 1 {
                 bail!("internal label {label:?} is not a single token: {tokens:?}");
             }
-            Ok((label, tokens[0]))
+            Ok((label.clone(), tokens[0]))
         })
         .collect()
 }
@@ -49,9 +51,6 @@ pub fn evaluate(
     let state = render_state(&request.state)?;
     let n_questions = request.questions.len();
 
-    // Pre-resolve label tokens for up to 26 options (max Choice size).
-    let label_tokens = resolve_label_tokens(model)?;
-
     let mut plans = Vec::with_capacity(n_questions);
 
     for (name, question) in request.questions {
@@ -60,6 +59,8 @@ pub fn evaluate(
             .map_err(|error| anyhow!("question {name:?}: {error}"))?;
         let (labels, descriptions) = options(&question);
         let internal_labels = internal_labels(labels.len());
+        // Resolve label tokens for this question's specific label set.
+        let label_tokens = resolve_label_tokens(model, &internal_labels)?;
         let prompt = render_prompt(&state, &question, &internal_labels, &descriptions);
         let messages = vec![
             LlamaChatMessage::new("system".into(), SYSTEM_PROMPT.into())?,
@@ -80,7 +81,7 @@ pub fn evaluate(
                 label_tokens
                     .get(label)
                     .copied()
-                    .ok_or_else(|| anyhow!("internal label {label:?} not in pre-resolved set"))
+                    .ok_or_else(|| anyhow!("internal label {label:?} not in resolved set"))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -185,9 +186,16 @@ fn options(question: &Question) -> (Vec<String>, Vec<String>) {
 }
 
 fn internal_labels(count: usize) -> Vec<String> {
-    (0..count)
-        .map(|index| char::from(b'A' + index as u8).to_string())
-        .collect()
+    assert!(count <= 255, "at most 255 internal labels");
+    if count <= 26 {
+        (0..count)
+            .map(|index| char::from(b'A' + index as u8).to_string())
+            .collect()
+    } else {
+        (0..count)
+            .map(|index| index.to_string())
+            .collect()
+    }
 }
 
 fn render_prompt(
@@ -353,5 +361,17 @@ mod tests {
             Answer::Score { score, .. } => assert!((score - 1.6).abs() < 1e-6),
             _ => panic!("wrong answer type"),
         }
+    }
+
+    #[test]
+    fn internal_labels_uses_letters_up_to_26() {
+        assert_eq!(internal_labels(2), vec!["A", "B"]);
+        assert_eq!(internal_labels(26), (0..26).map(|i| char::from(b'A' + i).to_string()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn internal_labels_uses_numbers_beyond_26() {
+        assert_eq!(internal_labels(27), (0..27).map(|i| i.to_string()).collect::<Vec<_>>());
+        assert_eq!(internal_labels(255), (0..255).map(|i| i.to_string()).collect::<Vec<_>>());
     }
 }

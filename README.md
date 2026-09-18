@@ -117,15 +117,17 @@ python3 benchmarks/benchmark.py server benchmarks/sample.jsonl \
   --output benchmark-results/granite.json
 ```
 
-Dataset preparation and radar plotting use optional Python dependencies:
+On first use, the script automatically installs `datasets` and `python-chess`
+under the gitignored `benchmarks/.deps/` directory. Radar plotting additionally
+needs Matplotlib:
 
 ```sh
-python3 -m pip install datasets matplotlib numpy python-chess
+python3 -m pip install matplotlib
 ```
 
-With those installed, the normal benchmark command needs no dataset argument.
-On its first run it downloads the source datasets and generates the complete
-fixture under the gitignored `benchmarks/data/` directory:
+The normal benchmark command needs no dataset argument. On its first run it
+downloads the source datasets and generates the complete fixture under the
+gitignored `benchmarks/data/` directory:
 
 ```sh
 python3 benchmarks/benchmark.py server \

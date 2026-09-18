@@ -28,3 +28,4 @@ models
 
 # Downloaded/generated benchmark fixtures
 /benchmarks/data/
+/benchmarks/.deps/

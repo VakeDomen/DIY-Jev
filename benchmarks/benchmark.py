@@ -17,11 +17,13 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import hashlib
+import importlib
 import json
 import math
 import random
 import re
 import statistics
+import subprocess
 import sys
 import time
 import urllib.error
@@ -33,6 +35,7 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_INSTRUCTION = "Which option correctly answers the question?"
 BENCHMARK_DATA_DIR = Path(__file__).resolve().parent / "data"
+LOCAL_DEPS_DIR = Path(__file__).resolve().parent / ".deps"
 DEFAULT_DATA_PATH = BENCHMARK_DATA_DIR / "radar-full.jsonl"
 PUBLISHED_RESULT_SOURCES = (
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json",
@@ -71,6 +74,9 @@ PUBLISHED_OPENJEV = {
     "gsm8k_mc10": {"examples": 1319, "accuracy": 0.17513267626990145},
     "chess": {"examples": 500, "accuracy": 0.24},
 }
+
+if LOCAL_DEPS_DIR.is_dir():
+    sys.path.insert(0, str(LOCAL_DEPS_DIR))
 
 
 @dataclass(frozen=True)
@@ -603,11 +609,46 @@ def plot_radar(
     print(f"wrote {output}")
 
 
+def install_data_dependencies() -> None:
+    print(f"installing benchmark data dependencies into {LOCAL_DEPS_DIR}")
+    LOCAL_DEPS_DIR.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--disable-pip-version-check",
+        "--upgrade",
+        "--target",
+        str(LOCAL_DEPS_DIR),
+        "datasets",
+        "python-chess",
+    ]
+    try:
+        subprocess.run(command, check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise RuntimeError(
+            "could not install benchmark data dependencies automatically; "
+            f"run {' '.join(command)}"
+        ) from error
+    if str(LOCAL_DEPS_DIR) not in sys.path:
+        sys.path.insert(0, str(LOCAL_DEPS_DIR))
+    importlib.invalidate_caches()
+
+
 def prepare_dataset(task: str, output: Path, limit: int | None, seed: int) -> None:
     try:
         from datasets import load_dataset as huggingface_load_dataset
-    except ImportError as error:
-        raise RuntimeError("prepare needs the Hugging Face datasets package") from error
+        import chess  # noqa: F401 -- validate both data dependencies up front
+    except ImportError:
+        install_data_dependencies()
+        try:
+            from datasets import load_dataset as huggingface_load_dataset
+            import chess  # noqa: F401
+        except ImportError as error:
+            raise RuntimeError(
+                "benchmark data dependencies remain unavailable after installation"
+            ) from error
 
     def load_dataset(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("cache_dir", str(BENCHMARK_DATA_DIR / "huggingface"))
