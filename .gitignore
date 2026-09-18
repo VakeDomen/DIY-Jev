@@ -25,3 +25,6 @@ target
 
 /target
 models
+
+# Downloaded/generated benchmark fixtures
+/benchmarks/data/

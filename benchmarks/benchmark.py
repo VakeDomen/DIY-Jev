@@ -32,6 +32,8 @@ from typing import Any, Callable, Sequence
 
 
 DEFAULT_INSTRUCTION = "Which option correctly answers the question?"
+BENCHMARK_DATA_DIR = Path(__file__).resolve().parent / "data"
+DEFAULT_DATA_PATH = BENCHMARK_DATA_DIR / "radar-full.jsonl"
 PUBLISHED_RESULT_SOURCES = (
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json",
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_extra_mc.json",
@@ -148,7 +150,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def add_run_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("data", type=Path)
+    parser.add_argument(
+        "data",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_DATA_PATH,
+        help=f"JSONL fixture (default: {DEFAULT_DATA_PATH})",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--limit", type=positive_int)
     parser.add_argument("--seed", type=int, default=0)
@@ -597,9 +605,13 @@ def plot_radar(
 
 def prepare_dataset(task: str, output: Path, limit: int | None, seed: int) -> None:
     try:
-        from datasets import load_dataset
+        from datasets import load_dataset as huggingface_load_dataset
     except ImportError as error:
         raise RuntimeError("prepare needs the Hugging Face datasets package") from error
+
+    def load_dataset(*args: Any, **kwargs: Any) -> Any:
+        kwargs.setdefault("cache_dir", str(BENCHMARK_DATA_DIR / "huggingface"))
+        return huggingface_load_dataset(*args, **kwargs)
 
     tasks = RADAR_TASKS if task == "radar" else (task,)
     rows: list[dict[str, Any]] = []
@@ -934,6 +946,14 @@ def main() -> int:
         if args.command == "radar":
             plot_radar(args.results, args.output, args.title, args.label)
             return 0
+
+        data_path = args.data.resolve()
+        if not data_path.exists():
+            if data_path != DEFAULT_DATA_PATH:
+                raise ValueError(f"dataset fixture does not exist: {data_path}")
+            print(f"benchmark fixture not found; downloading to {data_path}")
+            prepare_dataset("radar", data_path, None, args.seed)
+        args.data = data_path
 
         examples = load_examples(args.data, args.limit, args.seed)
         backend = ServerBackend(args.url, args.timeout, args.instruction, args.state_format)

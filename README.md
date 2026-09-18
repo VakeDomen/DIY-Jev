@@ -123,10 +123,19 @@ Dataset preparation and radar plotting use optional Python dependencies:
 python3 -m pip install datasets matplotlib numpy python-chess
 ```
 
+With those installed, the normal benchmark command needs no dataset argument.
+On its first run it downloads the source datasets and generates the complete
+fixture under the gitignored `benchmarks/data/` directory:
+
+```sh
+python3 benchmarks/benchmark.py server \
+  --warmup 5 --output benchmark-results/granite.json
+```
+
 Create a quick 100-examples-per-axis pilot fixture:
 
 ```sh
-python3 benchmarks/benchmark.py prepare radar benchmark-data/radar-pilot.jsonl \
+python3 benchmarks/benchmark.py prepare radar benchmarks/data/radar-pilot.jsonl \
   --limit 100 --seed 0
 ```
 
@@ -134,7 +143,7 @@ Omit `--limit` for the exact full suite. That is roughly 32,000 questions and
 will take a long time against a serialized local server.
 
 ```sh
-python3 benchmarks/benchmark.py prepare radar benchmark-data/radar-full.jsonl \
+python3 benchmarks/benchmark.py prepare radar benchmarks/data/radar-full.jsonl \
   --seed 0
 ```
 
@@ -142,7 +151,7 @@ Benchmark the server. The command immediately prints its per-axis deltas from
 OpenJev's published NLI-4B numbers and stores the same comparison in the JSON:
 
 ```sh
-python3 benchmarks/benchmark.py server benchmark-data/radar-pilot.jsonl \
+python3 benchmarks/benchmark.py server benchmarks/data/radar-pilot.jsonl \
   --warmup 5 --output benchmark-results/granite.json
 
 python3 benchmarks/benchmark.py compare \
@@ -164,5 +173,5 @@ comparison represented by the original chart.
 As a sanity check, OpenJev's published full-suite top-1 values (in axis order)
 are approximately `47.15%, 27.27%, 76.85%, 59.22%, 58.56%, 31.69%, 39.20%,
 17.51%, 24.00%`. Small differences can result from dependency or dataset
-revisions; both backends here always consume the same exported fixture, whose
-SHA-256 fingerprint is recorded in each result file.
+revisions. The exported fixture's SHA-256 fingerprint is recorded in each
+server result file.

@@ -237,11 +237,9 @@ components:
           additionalProperties: true
           properties:
             'true':
-              type: string
-              nullable: true
+              type: ["string", "null"]
             'false':
-              type: string
-              nullable: true
+              type: ["string", "null"]
     ChoiceQuestion:
       type: object
       required: [type, instructions, criteria]
@@ -264,8 +262,7 @@ components:
           minProperties: 2
           maxProperties: 255
           additionalProperties:
-            type: string
-            nullable: true
+            type: ["string", "null"]
     ScoreQuestion:
       type: object
       required: [type, instructions, criteria]
