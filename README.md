@@ -2,9 +2,10 @@
 
 A Jev-compatible constrained-classification HTTP server backed by
 `granite-4.2-3b` and llama.cpp. The model is loaded once at startup and all
-requests are sent to a resident inference worker. Within a request, the shared
-state/prompt prefix is encoded once and retained in the KV cache while each
-question suffix is scored independently.
+requests are sent to a resident inference worker. Each question within a request
+is evaluated independently (the previous shared-prefix KV-cache optimisation was
+removed because it did not produce equivalent results on the Granite
+architecture).
 
 This reproduces Jev's public request and response shapes; it is not TypeSafe's
 proprietary model or calibration method. Probabilities are a softmax over only
@@ -71,6 +72,34 @@ The Cloudflare-style body is accepted too:
 `GET /health` and `GET /ready` return `ok` after the model and context have
 loaded. Inference is serialized because one llama.cpp context owns the KV
 cache; HTTP callers may still submit concurrently and are queued.
+
+### Model identity validation
+
+The Cloudflare wrapper accepts an optional `model` field. Currently supported
+aliases:
+
+- `typesafe/jev`, `@cf/typesafe/jev`
+- `granite-jev`, `granite-jev-0.1.0`
+
+An unrecognised model name returns HTTP 422. The response `model` field always
+reflects the actually loaded backend (`granite-jev-0.1.0`).
+
+### Confidence and usage accounting
+
+Confidence is the **maximum softmax probability** among the legal answer tokens.
+It is a local per-response statistic, not a calibrated probability of correctness
+or an ensemble-derived uncertainty score. The upstream TypeSafe service computes
+confidence differently (distribution-derived); this local statistic is clearly
+labelled but not directly comparable.
+
+Usage is tracked as:
+- `input_tokens`: total tokens across all decoded prompts per question
+- `output_tokens`: always 1 per question (the single logit-read step that yields
+  the answer distribution)
+
+No output tokens are actually generated through autoregressive decoding. Each
+question's answer is read directly from the final prefill logits after a single
+forward pass of the prompt.
 
 ## Benchmark
 
