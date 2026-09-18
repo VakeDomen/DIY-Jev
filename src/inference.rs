@@ -381,6 +381,10 @@ fn build_batching_info(
 ///
 /// After the single suffix decode, read per-candidate boolean log-odds from
 /// each candidate's final logit row using `get_logits_ith(batch_index)`.
+/// Score all candidates using shared-prefix KV batching.
+///
+/// Fast path: shared prefix prefill + one all-suffix batch decode.
+/// Fallback: depth-by-depth branch decode (when suffix batch exceeds n_batch).
 fn batch_score_candidates(
     ctx: &mut LlamaContext<'_>,
     batching: &BatchingInfo,
@@ -397,22 +401,26 @@ fn batch_score_candidates(
     // ── 1. Shared prefix prefill ──────────────────────────────────────────
     decode_shared_prefix(ctx, &batching.shared, &seq_ids)?;
 
-    // ── 2. Single batch: all suffix tokens for all candidates ─────────────
+    let total_suffix_tokens: usize = batching.suffixes.iter().map(Vec::len).sum();
+    let fits = total_suffix_tokens <= ctx.n_batch() as usize;
+
+    if fits {
+        batch_score_fast_path(ctx, batching, bool_tokens)
+    } else {
+        batch_score_fallback(ctx, batching, bool_tokens)
+    }
+}
+
+/// Fast path: all suffix tokens in one `ctx.decode()`.
+fn batch_score_fast_path(
+    ctx: &mut LlamaContext<'_>,
+    batching: &BatchingInfo,
+    bool_tokens: &BooleanTokens,
+) -> Result<Vec<f32>, InferenceError> {
+    let n = batching.suffixes.len();
     let shared_len = batching.shared.len();
     let total_suffix_tokens: usize = batching.suffixes.iter().map(Vec::len).sum();
 
-    let mut scores: Vec<Option<f32>> = vec![None; n];
-
-    // Verify everything fits in one batch.
-    let fits = total_suffix_tokens <= ctx.n_batch() as usize;
-    if !fits {
-        return Err(InferenceError::internal(format!(
-            "suffix batch too large: {total_suffix_tokens} tokens (max {})",
-            ctx.n_batch()
-        )));
-    }
-
-    // Build a single batch with all suffix tokens.
     let mut batch = LlamaBatch::new(total_suffix_tokens, 1);
     let mut final_batch_positions: Vec<i32> = Vec::with_capacity(n);
 
@@ -436,19 +444,63 @@ fn batch_score_candidates(
     ctx.decode(&mut batch)
         .map_err(|e| InferenceError::backend(format!("suffix batch decode: {e}")))?;
 
-    // ── 3. Read per-candidate log-odds ────────────────────────────────────
+    let mut scores = vec![0.0_f32; n];
     for (ci, &batch_pos) in final_batch_positions.iter().enumerate() {
         let logits = ctx.get_logits_ith(batch_pos);
-        let s = boolean_log_odds_from_slice(logits, bool_tokens)?;
-        scores[ci] = Some(s);
+        scores[ci] = boolean_log_odds_from_slice(logits, bool_tokens)?;
+    }
+    Ok(scores)
+}
+
+/// Fallback: depth-by-depth branch decode when the batch is too large
+/// for a single `ctx.decode()`.
+fn batch_score_fallback(
+    ctx: &mut LlamaContext<'_>,
+    batching: &BatchingInfo,
+    bool_tokens: &BooleanTokens,
+) -> Result<Vec<f32>, InferenceError> {
+    let n = batching.suffixes.len();
+    let shared_len = batching.shared.len();
+    let max_len = batching.suffixes.iter().map(Vec::len).max().unwrap_or(0);
+    let mut scores: Vec<Option<f32>> = vec![None; n];
+    let mut branch_batch = LlamaBatch::new(n, 1);
+
+    for depth in 0..max_len {
+        let mut still_active: Vec<usize> = Vec::new();
+        for ci in 0..n {
+            if depth < batching.suffixes[ci].len() {
+                still_active.push(ci);
+            }
+        }
+        if still_active.is_empty() {
+            break;
+        }
+
+        branch_batch.clear();
+        for (_batch_idx, &ci) in still_active.iter().enumerate() {
+            let token = batching.suffixes[ci][depth];
+            let position = (shared_len + depth) as i32;
+            let is_last = depth + 1 == batching.suffixes[ci].len();
+            branch_batch
+                .add(token, position, &[ci as i32], is_last)
+                .map_err(|e| InferenceError::internal(format!(
+                    "branch add at depth {depth}: {e}"
+                )))?;
+        }
+
+        ctx.decode(&mut branch_batch)
+            .map_err(|e| InferenceError::backend(format!("branch decode: {e}")))?;
+
+        for (batch_idx, &ci) in still_active.iter().enumerate() {
+            if depth + 1 == batching.suffixes[ci].len() {
+                let logits = ctx.get_logits_ith(batch_idx as i32);
+                scores[ci] = Some(boolean_log_odds_from_slice(logits, bool_tokens)?);
+            }
+        }
     }
 
-    let scores: Vec<f32> = scores
-        .into_iter()
-        .collect::<Option<Vec<_>>>()
-        .ok_or_else(|| InferenceError::internal("some candidates were not scored"))?;
-
-    Ok(scores)
+    scores.into_iter().collect::<Option<Vec<_>>>()
+        .ok_or_else(|| InferenceError::internal("some candidates were not scored"))
 }
 
 // ===========================================================================

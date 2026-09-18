@@ -48,7 +48,7 @@ impl Config {
                 }
                 parsed
             }
-            Err(_) => 2048,
+            Err(_) => 8192,
         };
 
         let max_queue = match std::env::var("JEV_MAX_QUEUE") {
