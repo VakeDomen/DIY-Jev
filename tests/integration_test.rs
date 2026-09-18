@@ -1,72 +1,38 @@
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
+use std::num::NonZeroU32;
 
 use granite_jev::api::*;
 use granite_jev::config::Config;
 use serde_json::Value;
 
-/// Verify that Config::from_env rejects zero values for batch_size, max_queue,
-/// and max_questions.
+/// Verify that Config::new rejects zero values for batch_size, max_queue,
+/// and max_questions. This uses direct constructor calls (no environment
+/// variables) so it is safe to run in parallel with other tests.
 #[test]
 fn config_rejects_zero_values() {
-    // We test the validation logic by setting environment variables and
-    // verifying that Config::from_env returns an error for each.
-    let cases: Vec<(&str, &str)> = vec![
-        ("JEV_BATCH_SIZE", "0"),
-        ("JEV_MAX_QUEUE", "0"),
-        ("JEV_MAX_QUESTIONS", "0"),
-    ];
+    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let ctx = NonZeroU32::new(4096).unwrap();
 
-    for (key, value) in cases {
-        // Save original
-        let orig = std::env::var(key).ok();
-        unsafe { std::env::set_var(key, value); }
-        let result = Config::from_env();
-        // Restore original
-        match orig {
-            Some(v) => unsafe { std::env::set_var(key, v); },
-            None => unsafe { std::env::remove_var(key); },
-        }
-        assert!(
-            result.is_err(),
-            "Config::from_env should reject {key}={value}"
-        );
-    }
+    // Zero batch_size
+    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100).is_err());
+    // Zero max_queue
+    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100).is_err());
+    // Zero max_questions
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0).is_err());
 }
 
-/// Verify that Config::from_env accepts positive values.
+/// Verify that Config::new accepts positive values.
 #[test]
 fn config_accepts_positive_values() {
-    // Save and set known-good values
-    let orig_batch = std::env::var("JEV_BATCH_SIZE").ok();
-    let orig_queue = std::env::var("JEV_MAX_QUEUE").ok();
-    let orig_questions = std::env::var("JEV_MAX_QUESTIONS").ok();
+    let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+    let ctx = NonZeroU32::new(4096).unwrap();
 
-    unsafe {
-        std::env::set_var("JEV_BATCH_SIZE", "512");
-        std::env::set_var("JEV_MAX_QUEUE", "32");
-        std::env::set_var("JEV_MAX_QUESTIONS", "50");
-    }
-
-    let result = Config::from_env();
-
-    // Restore
-    match orig_batch {
-        Some(v) => unsafe { std::env::set_var("JEV_BATCH_SIZE", v); },
-        None => unsafe { std::env::remove_var("JEV_BATCH_SIZE"); },
-    }
-    match orig_queue {
-        Some(v) => unsafe { std::env::set_var("JEV_MAX_QUEUE", v); },
-        None => unsafe { std::env::remove_var("JEV_MAX_QUEUE"); },
-    }
-    match orig_questions {
-        Some(v) => unsafe { std::env::set_var("JEV_MAX_QUESTIONS", v); },
-        None => unsafe { std::env::remove_var("JEV_MAX_QUESTIONS"); },
-    }
-
-    let config = result.expect("positive config values should be accepted");
-    assert!(config.batch_size > 0);
-    assert!(config.max_queue > 0);
-    assert!(config.max_questions > 0);
+    let config = Config::new("model".into(), addr, ctx, 512, 32, 50)
+        .expect("positive config values should be accepted");
+    assert_eq!(config.batch_size, 512);
+    assert_eq!(config.max_queue, 32);
+    assert_eq!(config.max_questions, 50);
 }
 
 /// Verify that the full request → response serialization round-trips

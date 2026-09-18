@@ -76,6 +76,29 @@ impl Config {
             Err(_) => 100,
         };
 
+        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions)
+    }
+
+    /// Create a new config, validating numeric constraints.
+    ///
+    /// Returns an error if `batch_size`, `max_queue`, or `max_questions` is zero.
+    pub fn new(
+        model_path: String,
+        bind_addr: SocketAddr,
+        context_size: NonZeroU32,
+        batch_size: u32,
+        max_queue: usize,
+        max_questions: usize,
+    ) -> Result<Self> {
+        if batch_size == 0 {
+            anyhow::bail!("batch_size must be positive, got 0");
+        }
+        if max_queue == 0 {
+            anyhow::bail!("max_queue must be positive, got 0");
+        }
+        if max_questions == 0 {
+            anyhow::bail!("max_questions must be positive, got 0");
+        }
         Ok(Self {
             model_path,
             bind_addr,

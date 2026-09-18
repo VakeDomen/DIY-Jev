@@ -36,19 +36,23 @@ impl IntoResponse for ApiError {
 /// Convert an Axum `JsonRejection` (malformed request body) into our typed
 /// `ApiError` so that the response always uses the `{"error": "..."}` envelope
 /// documented in openapi.yaml.
+///
+/// We delegate the HTTP status code to Axum's own mapping:
+///   - `JsonDataError`       → 422
+///   - `JsonSyntaxError`     → 400
+///   - `MissingJsonContentType` → 415
+///   - `BytesRejection`      → 413 (LengthLimitError) or 400 (UnknownBodyError)
+///
+/// The `JsonRejection` enum exposes both `status()` and `body_text()` directly.
 impl From<JsonRejection> for ApiError {
     fn from(rejection: JsonRejection) -> Self {
-        let (status, kind) = match &rejection {
-            JsonRejection::JsonDataError(_)
-            | JsonRejection::JsonSyntaxError(_)
-            | JsonRejection::MissingJsonContentType(_)
-            | JsonRejection::BytesRejection(_) => {
-                (StatusCode::BAD_REQUEST, ErrorKind::Validation)
-            }
-            _ => {
-                // Catch-all for any future rejection variants.
-                (StatusCode::BAD_REQUEST, ErrorKind::Internal)
-            }
+        let status = rejection.status();
+        let kind = match status {
+            StatusCode::UNPROCESSABLE_ENTITY => ErrorKind::Validation,
+            StatusCode::BAD_REQUEST => ErrorKind::Validation,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE => ErrorKind::Validation,
+            StatusCode::PAYLOAD_TOO_LARGE => ErrorKind::Validation,
+            _ => ErrorKind::Internal,
         };
         ApiError {
             status,

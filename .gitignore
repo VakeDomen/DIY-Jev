@@ -32,3 +32,4 @@ models
 
 # Benchmark output files
 /benchmark-results/
+benchmarks/__pycache__/
