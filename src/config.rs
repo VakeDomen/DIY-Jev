@@ -38,23 +38,41 @@ impl Config {
         };
 
         let batch_size = match std::env::var("JEV_BATCH_SIZE") {
-            Ok(value) => value.parse().with_context(|| {
-                format!("invalid JEV_BATCH_SIZE: {value:?} is not a valid u32")
-            })?,
+            Ok(value) => {
+                let parsed: u32 = value.parse().with_context(|| {
+                    format!("invalid JEV_BATCH_SIZE: {value:?} is not a valid u32")
+                })?;
+                if parsed == 0 {
+                    anyhow::bail!("JEV_BATCH_SIZE must be positive, got 0");
+                }
+                parsed
+            }
             Err(_) => 2048,
         };
 
         let max_queue = match std::env::var("JEV_MAX_QUEUE") {
-            Ok(value) => value.parse().with_context(|| {
-                format!("invalid JEV_MAX_QUEUE: {value:?} is not a valid usize")
-            })?,
+            Ok(value) => {
+                let parsed: usize = value.parse().with_context(|| {
+                    format!("invalid JEV_MAX_QUEUE: {value:?} is not a valid usize")
+                })?;
+                if parsed == 0 {
+                    anyhow::bail!("JEV_MAX_QUEUE must be positive, got 0");
+                }
+                parsed
+            }
             Err(_) => 64,
         };
 
         let max_questions = match std::env::var("JEV_MAX_QUESTIONS") {
-            Ok(value) => value.parse().with_context(|| {
-                format!("invalid JEV_MAX_QUESTIONS: {value:?} is not a valid usize")
-            })?,
+            Ok(value) => {
+                let parsed: usize = value.parse().with_context(|| {
+                    format!("invalid JEV_MAX_QUESTIONS: {value:?} is not a valid usize")
+                })?;
+                if parsed == 0 {
+                    anyhow::bail!("JEV_MAX_QUESTIONS must be positive, got 0");
+                }
+                parsed
+            }
             Err(_) => 100,
         };
 

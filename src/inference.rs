@@ -387,4 +387,61 @@ mod tests {
         assert_eq!(internal_labels(27), (0..27).map(|i| i.to_string()).collect::<Vec<_>>());
         assert_eq!(internal_labels(255), (0..255).map(|i| i.to_string()).collect::<Vec<_>>());
     }
+
+    #[test]
+    fn render_prompt_choice_includes_option_names_and_descriptions() {
+        let question = Question::Choice {
+            instructions: Value::String("test".into()),
+            criteria: BTreeMap::from([
+                ("refund".into(), Some("Requested".into())),
+                ("exchange".into(), Some("Requested".into())),
+            ]),
+        };
+        let (labels, descriptions) = options(&question);
+        let internal = internal_labels(labels.len());
+
+        let prompt = render_prompt("customer state", &question, &internal, &descriptions);
+
+        // The prompt must render both the original name ("refund" / "exchange")
+        // and its description ("Requested").
+        assert!(
+            prompt.contains("refund"),
+            "prompt must contain option name 'refund', got: {prompt}"
+        );
+        assert!(
+            prompt.contains("exchange"),
+            "prompt must contain option name 'exchange', got: {prompt}"
+        );
+        assert!(
+            prompt.contains("Requested"),
+            "prompt must contain description 'Requested', got: {prompt}"
+        );
+        // The format should be "A: refund — Requested" or similar.
+        assert!(
+            prompt.contains(": refund"),
+            "prompt should show 'A: refund' or 'B: refund': {prompt}"
+        );
+        assert!(
+            prompt.contains(": exchange"),
+            "prompt should show 'A: exchange' or 'B: exchange': {prompt}"
+        );
+    }
+
+    #[test]
+    fn render_prompt_noul_includes_descriptions() {
+        let question = Question::Noul {
+            instructions: Value::String("Is this correct?".into()),
+            criteria: Some(BTreeMap::from([
+                ("true".into(), Some("Yes".into())),
+                ("false".into(), Some("No".into())),
+            ])),
+        };
+        let (labels, descriptions) = options(&question);
+        let internal = internal_labels(labels.len());
+        let prompt = render_prompt("test state", &question, &internal, &descriptions);
+
+        assert!(prompt.contains("Yes"), "noul prompt must contain 'Yes', got: {prompt}");
+        assert!(prompt.contains("No"), "noul prompt must contain 'No', got: {prompt}");
+    }
+
 }

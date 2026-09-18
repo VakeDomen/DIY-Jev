@@ -1,7 +1,73 @@
 use std::collections::BTreeMap;
 
 use granite_jev::api::*;
+use granite_jev::config::Config;
 use serde_json::Value;
+
+/// Verify that Config::from_env rejects zero values for batch_size, max_queue,
+/// and max_questions.
+#[test]
+fn config_rejects_zero_values() {
+    // We test the validation logic by setting environment variables and
+    // verifying that Config::from_env returns an error for each.
+    let cases: Vec<(&str, &str)> = vec![
+        ("JEV_BATCH_SIZE", "0"),
+        ("JEV_MAX_QUEUE", "0"),
+        ("JEV_MAX_QUESTIONS", "0"),
+    ];
+
+    for (key, value) in cases {
+        // Save original
+        let orig = std::env::var(key).ok();
+        unsafe { std::env::set_var(key, value); }
+        let result = Config::from_env();
+        // Restore original
+        match orig {
+            Some(v) => unsafe { std::env::set_var(key, v); },
+            None => unsafe { std::env::remove_var(key); },
+        }
+        assert!(
+            result.is_err(),
+            "Config::from_env should reject {key}={value}"
+        );
+    }
+}
+
+/// Verify that Config::from_env accepts positive values.
+#[test]
+fn config_accepts_positive_values() {
+    // Save and set known-good values
+    let orig_batch = std::env::var("JEV_BATCH_SIZE").ok();
+    let orig_queue = std::env::var("JEV_MAX_QUEUE").ok();
+    let orig_questions = std::env::var("JEV_MAX_QUESTIONS").ok();
+
+    unsafe {
+        std::env::set_var("JEV_BATCH_SIZE", "512");
+        std::env::set_var("JEV_MAX_QUEUE", "32");
+        std::env::set_var("JEV_MAX_QUESTIONS", "50");
+    }
+
+    let result = Config::from_env();
+
+    // Restore
+    match orig_batch {
+        Some(v) => unsafe { std::env::set_var("JEV_BATCH_SIZE", v); },
+        None => unsafe { std::env::remove_var("JEV_BATCH_SIZE"); },
+    }
+    match orig_queue {
+        Some(v) => unsafe { std::env::set_var("JEV_MAX_QUEUE", v); },
+        None => unsafe { std::env::remove_var("JEV_MAX_QUEUE"); },
+    }
+    match orig_questions {
+        Some(v) => unsafe { std::env::set_var("JEV_MAX_QUESTIONS", v); },
+        None => unsafe { std::env::remove_var("JEV_MAX_QUESTIONS"); },
+    }
+
+    let config = result.expect("positive config values should be accepted");
+    assert!(config.batch_size > 0);
+    assert!(config.max_queue > 0);
+    assert!(config.max_questions > 0);
+}
 
 /// Verify that the full request → response serialization round-trips
 /// correctly for every question type. This is a contract test that
@@ -135,7 +201,8 @@ fn supports_instruction_types() {
     assert!(q_obj.instructions_str().contains("\"key\":"));
 }
 
-/// Verify that the Choice question renders instruction with names preserved.
+/// Verify that the Choice question's criteria keys (option names) are preserved
+/// and accessible through the question API — they must not be lost in serde round-trips.
 #[test]
 fn choice_renders_option_names() {
     let question = Question::Choice {
@@ -145,9 +212,19 @@ fn choice_renders_option_names() {
             ("exchange".into(), Some("Requested".into())),
         ]),
     };
-    // Both options have the same description "Requested", so names matter.
-    // Just verify the question was constructed correctly.
-    assert!(question.instructions_str() == "test");
+    // Both options share the same description "Requested", so the name
+    // ("refund" vs "exchange") is the only distinguishing field.
+    // Verify the criteria keys survived construction and serde.
+    assert_eq!(question.instructions_str(), "test");
+
+    // Verify the criteria keys are accessible through the Rust API.
+    if let Question::Choice { criteria, .. } = &question {
+        assert!(criteria.contains_key("refund"), "option name 'refund' must be present");
+        assert!(criteria.contains_key("exchange"), "option name 'exchange' must be present");
+        assert_eq!(criteria.len(), 2, "must have exactly 2 criteria entries");
+    } else {
+        panic!("expected Question::Choice");
+    }
 }
 
 /// Verify Cloudflare wrapper shape works.

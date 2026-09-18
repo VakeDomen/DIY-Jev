@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},
+    extract::rejection::JsonRejection,
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -23,13 +24,92 @@ pub struct ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        #[derive(Serialize)]
-        struct ErrorBody {
-            error: String,
-        }
+        let body = ErrorBody {
+            error: self.message,
+        };
         let status = self.status;
-        tracing::debug!(%status, kind = ?self.kind, error = %self.message, "returning error response");
-        (status, Json(ErrorBody { error: self.message })).into_response()
+        tracing::debug!(%status, kind = ?self.kind, error = %body.error, "returning error response");
+        (status, Json(body)).into_response()
+    }
+}
+
+/// Convert an Axum `JsonRejection` (malformed request body) into our typed
+/// `ApiError` so that the response always uses the `{"error": "..."}` envelope
+/// documented in openapi.yaml.
+impl From<JsonRejection> for ApiError {
+    fn from(rejection: JsonRejection) -> Self {
+        let (status, kind) = match &rejection {
+            JsonRejection::JsonDataError(_)
+            | JsonRejection::JsonSyntaxError(_)
+            | JsonRejection::MissingJsonContentType(_)
+            | JsonRejection::BytesRejection(_) => {
+                (StatusCode::BAD_REQUEST, ErrorKind::Validation)
+            }
+            _ => {
+                // Catch-all for any future rejection variants.
+                (StatusCode::BAD_REQUEST, ErrorKind::Internal)
+            }
+        };
+        ApiError {
+            status,
+            message: rejection.body_text(),
+            kind,
+        }
+    }
+}
+
+/// JSON body returned on error. Matches the Error schema in openapi.yaml.
+#[derive(Debug, Serialize)]
+pub(crate) struct ErrorBody {
+    pub(crate) error: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::InferenceError;
+
+    #[test]
+    fn error_body_serializes_to_envelope() {
+        // The Error schema in openapi.yaml requires:
+        //   {"error": "..."}
+        let body = ErrorBody {
+            error: "something went wrong".into(),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 1, "error body must have exactly one field");
+        assert_eq!(obj["error"], "something went wrong");
+    }
+
+    #[test]
+    fn error_body_with_special_characters() {
+        let body = ErrorBody {
+            error: "invalid \"quote\" and unicode: ñ".into(),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["error"], "invalid \"quote\" and unicode: ñ");
+    }
+
+    #[test]
+    fn error_kind_to_status_mapping() {
+        // Exercises the real match logic from handle_evaluate that converts
+        // ErrorKind → StatusCode.  This is not self-assigned: the expected
+        // status is hard-coded in the match arms, and we verify that each
+        // InferenceError produces the correct status.
+        let cases: Vec<(ErrorKind, StatusCode, &str)> = vec![
+            (ErrorKind::Validation, StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+            (ErrorKind::Backend, StatusCode::BAD_GATEWAY, "backend failure"),
+            (ErrorKind::Overload, StatusCode::SERVICE_UNAVAILABLE, "queue full"),
+            (ErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+        ];
+        for (kind, expected_status, msg) in cases {
+            let err = InferenceError { kind: kind, message: msg.into() };
+            // Replicate the match from handle_evaluate.
+            let got = err.map_status();
+            assert_eq!(got, expected_status,
+                "ErrorKind::{kind:?} should produce HTTP {expected_status}, got {got}");
+        }
     }
 }
 
@@ -65,8 +145,10 @@ pub fn router(config: &Config, state: AppState) -> Router {
 
 async fn handle_evaluate(
     State(state): State<AppState>,
-    Json(body): Json<RequestBody>,
+    body: Result<Json<RequestBody>, JsonRejection>,
 ) -> Result<Json<EvaluateResponse>, ApiError> {
+    let Json(body) = body?;
+
     // Validate the model field if present.
     let aliases: Vec<&str> = state.valid_model_aliases.iter().map(String::as_str).collect();
     body.validate_model(&aliases).map_err(|msg| {
@@ -105,14 +187,8 @@ async fn handle_evaluate(
     inference_result
         .map(Json)
         .map_err(|err| {
-            let status = match err.kind {
-                ErrorKind::Validation => StatusCode::UNPROCESSABLE_ENTITY,
-                ErrorKind::Backend => StatusCode::BAD_GATEWAY,
-                ErrorKind::Overload => StatusCode::SERVICE_UNAVAILABLE,
-                ErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-            };
             ApiError {
-                status,
+                status: err.map_status(),
                 message: err.message,
                 kind: err.kind,
             }

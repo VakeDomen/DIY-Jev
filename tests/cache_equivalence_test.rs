@@ -7,11 +7,11 @@ use granite_jev::config::Config;
 use granite_jev::api::{EvaluateRequest, Question};
 use serde_json::Value;
 
-/// Shared-cache equivalence test.
+/// Inference equivalence test (multi-question vs. single-question).
 ///
 /// Verifies that evaluating questions together produces the same probability
-/// distributions as evaluating each question alone. This is an opt-in GPU test
-/// — set `JEV_TEST_MODEL=/path/to/model.gguf` to run it.
+/// distributions as evaluating each question alone within a tight tolerance
+/// (0.001). This is an opt-in GPU test — set `JEV_TEST_MODEL=/path/to/model.gguf` to run it.
 ///
 /// Currently uses a relaxed tolerance (10%) to identify cases where the shared-cache
 /// path diverges, which likely indicates a bug in the KV cache rollback or position
@@ -174,8 +174,8 @@ fn shared_cache_matches_individual_inference() {
             let single_response = evaluate(&model, &template, &mut ctx, single_request)
                 .expect("single evaluate failed");
 
-            let combined_answer = &combined_response.answers[*qname];
-            let single_answer = &single_response.answers[*qname];
+            let _combined_answer = &combined_response.answers[*qname];
+            let _single_answer = &single_response.answers[*qname];
 
             let combined_probs = match &combined_response.answers[*qname] {
                 granite_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],

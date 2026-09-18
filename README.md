@@ -117,13 +117,9 @@ python3 benchmarks/benchmark.py server benchmarks/sample.jsonl \
   --output benchmark-results/granite.json
 ```
 
-On first use, the script automatically installs `datasets` and `python-chess`
-under the gitignored `benchmarks/.deps/` directory. Radar plotting additionally
-needs Matplotlib:
-
-```sh
-python3 -m pip install matplotlib
-```
+On first use, the script automatically installs `datasets`, `python-chess`, and
+the radar plotting dependencies under the gitignored `benchmarks/.deps/`
+directory.
 
 The normal benchmark command needs no dataset argument. On its first run it
 downloads the source datasets and generates the complete fixture under the
@@ -131,8 +127,16 @@ gitignored `benchmarks/data/` directory:
 
 ```sh
 python3 benchmarks/benchmark.py server \
-  --warmup 5 --output benchmark-results/granite.json
+  --warmup 5
 ```
+
+The default concurrency is 10, the result is saved to
+`benchmarks/results/granite.json`, and the radar is rendered to
+`benchmarks/results/radar.png`. Override the request settings with
+`--concurrency` or `--output`.
+
+During the run, a dependency-free progress bar on stderr shows completed
+requests, throughput, and estimated remaining time.
 
 Create a quick 100-examples-per-axis pilot fixture:
 

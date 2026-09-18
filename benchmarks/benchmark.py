@@ -35,8 +35,11 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_INSTRUCTION = "Which option correctly answers the question?"
 BENCHMARK_DATA_DIR = Path(__file__).resolve().parent / "data"
+BENCHMARK_RESULTS_DIR = Path(__file__).resolve().parent / "results"
 LOCAL_DEPS_DIR = Path(__file__).resolve().parent / ".deps"
 DEFAULT_DATA_PATH = BENCHMARK_DATA_DIR / "radar-full.jsonl"
+DEFAULT_RESULT_PATH = BENCHMARK_RESULTS_DIR / "granite.json"
+DEFAULT_RADAR_PATH = BENCHMARK_RESULTS_DIR / "radar.png"
 PUBLISHED_RESULT_SOURCES = (
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json",
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_extra_mc.json",
@@ -110,6 +113,57 @@ class Prediction:
         }
 
 
+class ProgressBar:
+    """Small dependency-free progress bar for long benchmark runs."""
+
+    def __init__(self, total: int, label: str = "benchmark") -> None:
+        self.total = total
+        self.label = label
+        self.completed = 0
+        self.started = time.perf_counter()
+        self.last_render = 0.0
+
+    def update(self) -> None:
+        self.completed += 1
+        now = time.perf_counter()
+        if self.completed < self.total and now - self.last_render < 0.1:
+            return
+        self.last_render = now
+        elapsed = max(now - self.started, 1e-9)
+        rate = self.completed / elapsed
+        fraction = self.completed / self.total if self.total else 1.0
+        width = 28
+        filled = min(width, int(width * fraction))
+        bar = "#" * filled + "-" * (width - filled)
+        eta = (self.total - self.completed) / rate if rate else 0.0
+        sys.stderr.write(
+            f"\r{self.label}: [{bar}] {self.completed}/{self.total} "
+            f"{fraction:5.1%} {rate:6.2f}/s ETA {format_duration(eta)}"
+        )
+        sys.stderr.flush()
+
+    def close(self) -> None:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+
+    def __enter__(self) -> "ProgressBar":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, remainder = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m{remainder:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -118,7 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_run_arguments(server)
     server.add_argument("--url", default="http://127.0.0.1:8080/v1/evaluate")
     server.add_argument("--timeout", type=float, default=120.0)
-    server.add_argument("--concurrency", type=positive_int, default=1)
+    server.add_argument(
+        "--concurrency",
+        type=positive_int,
+        default=10,
+        help="simultaneous HTTP requests (default: 10)",
+    )
     server.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
     server.add_argument(
         "--state-format",
@@ -163,7 +222,12 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
         default=DEFAULT_DATA_PATH,
         help=f"JSONL fixture (default: {DEFAULT_DATA_PATH})",
     )
-    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_RESULT_PATH,
+        help=f"result JSON path (default: {DEFAULT_RESULT_PATH})",
+    )
     parser.add_argument("--limit", type=positive_int)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--warmup", type=nonnegative_int, default=3)
@@ -321,7 +385,14 @@ def run_backend(
         for index, example in enumerate(examples)
     ]
     if concurrency == 1:
-        completed = [(repeat, index, predict(example)) for repeat, index, example in jobs]
+        completed = []
+        with ProgressBar(len(jobs)) as progress:
+            for repeat, index, example in jobs:
+                try:
+                    prediction = predict(example)
+                finally:
+                    progress.update()
+                completed.append((repeat, index, prediction))
     else:
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
             futures = {
@@ -329,9 +400,14 @@ def run_backend(
                 for repeat, index, example in jobs
             }
             completed = []
-            for future in concurrent.futures.as_completed(futures):
-                repeat, index = futures[future]
-                completed.append((repeat, index, future.result()))
+            with ProgressBar(len(futures)) as progress:
+                for future in concurrent.futures.as_completed(futures):
+                    repeat, index = futures[future]
+                    try:
+                        prediction = future.result()
+                    finally:
+                        progress.update()
+                    completed.append((repeat, index, prediction))
     wall_seconds = time.perf_counter() - started
     completed.sort(key=lambda item: (item[0], item[1]))
 
@@ -529,7 +605,15 @@ def plot_radar(
         import matplotlib.pyplot as plt
         import numpy as np
     except ImportError as error:
-        raise RuntimeError("radar plotting needs matplotlib and numpy") from error
+        install_plot_dependencies()
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import numpy as np
+        except ImportError as retry_error:
+            raise RuntimeError("radar plotting needs matplotlib and numpy") from retry_error
 
     if labels is not None and len(labels) != len(result_paths):
         raise ValueError("--label must be omitted or repeated once per result file")
@@ -612,6 +696,15 @@ def plot_radar(
 def install_data_dependencies() -> None:
     print(f"installing benchmark data dependencies into {LOCAL_DEPS_DIR}")
     LOCAL_DEPS_DIR.mkdir(parents=True, exist_ok=True)
+    install_packages("datasets", "python-chess")
+
+
+def install_plot_dependencies() -> None:
+    print(f"installing radar plotting dependencies into {LOCAL_DEPS_DIR}")
+    install_packages("matplotlib")
+
+
+def install_packages(*packages: str) -> None:
     command = [
         sys.executable,
         "-m",
@@ -621,14 +714,13 @@ def install_data_dependencies() -> None:
         "--upgrade",
         "--target",
         str(LOCAL_DEPS_DIR),
-        "datasets",
-        "python-chess",
+        *packages,
     ]
     try:
         subprocess.run(command, check=True)
     except (OSError, subprocess.CalledProcessError) as error:
         raise RuntimeError(
-            "could not install benchmark data dependencies automatically; "
+            "could not install benchmark dependencies automatically; "
             f"run {' '.join(command)}"
         ) from error
     if str(LOCAL_DEPS_DIR) not in sys.path:
@@ -1023,6 +1115,15 @@ def main() -> int:
             "sources": list(PUBLISHED_RESULT_SOURCES),
         }
         save_and_print(result, args.output)
+        if all(task in result.get("tasks", {}) for task in RADAR_TASKS):
+            plot_radar(
+                [args.output],
+                DEFAULT_RADAR_PATH,
+                "Granite Jev vs. published OpenJev",
+                ["Granite Jev server"],
+            )
+        else:
+            print("radar skipped: fixture does not contain all nine radar tasks")
         return 0
     except (OSError, RuntimeError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

@@ -51,6 +51,17 @@ impl InferenceError {
             message: message.into(),
         }
     }
+
+    /// Map the error's kind to the HTTP status code used in API responses.
+    /// Must stay in sync with the match in crate::http::handle_evaluate.
+    pub fn map_status(&self) -> axum::http::StatusCode {
+        match self.kind {
+            ErrorKind::Validation => axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            ErrorKind::Backend => axum::http::StatusCode::BAD_GATEWAY,
+            ErrorKind::Overload => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            ErrorKind::Internal => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
 }
 
 impl fmt::Display for InferenceError {

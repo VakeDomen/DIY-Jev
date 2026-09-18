@@ -325,17 +325,21 @@ def test_error_responses() -> int:
     spec = load_openapi()
     errors = 0
 
-    error_cases: list[tuple[str, str, dict]] = [
-        ("400 Bad Request", "/v1/evaluate", {"error": "invalid JSON"}),
-        ("422 Validation error", "/v1/evaluate", {"error": "unsupported model"}),
-        ("502 Backend error", "/v1/evaluate", {"error": "backend failure"}),
-        ("503 Overload", "/v1/evaluate", {"error": "queue full"}),
+    # Each error case specifies the response status it expects to validate
+    # against, so every error status code gets its own test.
+    error_cases: list[tuple[str, str, str, dict]] = [
+        ("400 Bad Request", "/v1/evaluate", "400", {"error": "invalid JSON"}),
+        ("413 Content Too Large", "/v1/evaluate", "413", {"error": "body too large"}),
+        ("415 Unsupported Media", "/v1/evaluate", "415", {"error": "unsupported content type"}),
+        ("422 Validation error", "/v1/evaluate", "422", {"error": "unsupported model"}),
+        ("502 Backend error", "/v1/evaluate", "502", {"error": "backend failure"}),
+        ("503 Overload", "/v1/evaluate", "503", {"error": "queue full"}),
     ]
 
-    for name, path, body in error_cases:
-        schema = get_response_schema(spec, path, "400")
+    for name, path, status, body in error_cases:
+        schema = get_response_schema(spec, path, status)
         if schema is None:
-            print(f"⚠  {name}: no error schema found")
+            print(f"⚠  {name}: no schema found for status {status}")
             errors += 1
             continue
         try:

@@ -76,7 +76,7 @@ pub fn start(
     let worker = std::thread::Builder::new()
         .name("jev-inference".into())
         .spawn(move || {
-            if let Err(error) = run(jobs_rx, &ready_tx, ready_writer.clone(), max_questions) {
+            if let Err(error) = run(jobs_rx, &ready_tx, ready_writer.clone(), max_questions, &config) {
                 let _ = ready_tx.send(Err(InferenceError::internal(error.to_string())));
                 tracing::error!(%error, "inference worker stopped");
             }
@@ -101,11 +101,11 @@ fn run(
     ready: &mpsc::SyncSender<Result<(), InferenceError>>,
     worker_ready: Arc<AtomicBool>,
     max_questions: usize,
+    config: &Config,
 ) -> Result<()> {
     let backend = crate::init::init_backend()?;
-    let config = crate::config::Config::from_env()?;
-    let (model, template) = crate::init::load_model(&backend, &config)?;
-    let mut context = crate::init::build_context(&backend, &model, &config)?;
+    let (model, template) = crate::init::load_model(&backend, config)?;
+    let mut context = crate::init::build_context(&backend, &model, config)?;
     ready.send(Ok(())).ok();
     // Arm the readiness guard so /ready returns 200. The guard's Drop
     // implementation clears the flag on any exit path, including panic unwind.
