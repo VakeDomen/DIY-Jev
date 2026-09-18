@@ -10,7 +10,12 @@ pub async fn download_model() -> Result<()> {
         std::env::set_var("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1");
     }
 
-    let path_to_check = PathBuf::from("./models/granite-4.2-3b-Q4_K_M.gguf");
+    let models_dir = PathBuf::from("./models");
+    if !models_dir.is_dir() {
+        std::fs::create_dir_all(&models_dir)?;
+    }
+
+    let path_to_check = models_dir.join("granite-4.2-3b-Q4_K_M.gguf");
     if path_to_check.is_file() {
         tracing::info!("model already available");
         return Ok(());
@@ -24,7 +29,7 @@ pub async fn download_model() -> Result<()> {
     let model_path = repo
         .download_file()
         .filename("granite-4.2-3b-Q4_K_M.gguf")
-        .local_dir(PathBuf::from("./models"))
+        .local_dir(models_dir)
         .send()
         .await?;
 
