@@ -106,6 +106,11 @@ fn run(
     let backend = crate::init::init_backend()?;
     let (model, template) = crate::init::load_model(&backend, config)?;
     let mut context = crate::init::build_context(&backend, &model, config)?;
+
+    // Resolve boolean tokens once at startup so every inference call can
+    // skip this work.
+    let bool_tokens = inference::resolve_boolean_tokens(&model, &template)?;
+
     ready.send(Ok(())).ok();
     // Arm the readiness guard so /ready returns 200. The guard's Drop
     // implementation clears the flag on any exit path, including panic unwind.
@@ -121,7 +126,7 @@ fn run(
             continue;
         }
 
-        let result = inference::evaluate(&model, &template, &mut context, job.request);
+        let result = inference::evaluate(&model, &template, &mut context, job.request, &bool_tokens);
 
         let _ = job.response.send(result);
     }

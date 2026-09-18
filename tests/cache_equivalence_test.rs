@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
 use granite_jev::inference::evaluate;
+use granite_jev::inference::resolve_boolean_tokens;
 use granite_jev::init::{build_context, init_backend, load_model};
 use granite_jev::config::Config;
 use granite_jev::api::{EvaluateRequest, Question};
@@ -44,6 +45,9 @@ fn shared_cache_matches_individual_inference() {
     let backend = init_backend().expect("failed to init llama backend");
     let (model, template) = load_model(&backend, &config).expect("failed to load model");
     let mut ctx = build_context(&backend, &model, &config).expect("failed to build context");
+
+    let bool_tokens = resolve_boolean_tokens(&model, &template)
+        .expect("failed to resolve boolean tokens");
 
     // ── Test scenarios ──────────────────────────────────────────────────
 
@@ -162,7 +166,7 @@ fn shared_cache_matches_individual_inference() {
                 .collect(),
         };
 
-        let combined_response = evaluate(&model, &template, &mut ctx, combined_request)
+        let combined_response = evaluate(&model, &template, &mut ctx, combined_request, &bool_tokens)
             .expect("combined evaluate failed");
 
         // Check each question individually
@@ -172,7 +176,7 @@ fn shared_cache_matches_individual_inference() {
                 questions: BTreeMap::from([((*qname).to_owned(), question.clone())]),
             };
 
-            let single_response = evaluate(&model, &template, &mut ctx, single_request)
+            let single_response = evaluate(&model, &template, &mut ctx, single_request, &bool_tokens)
                 .expect("single evaluate failed");
 
             let _combined_answer = &combined_response.answers[*qname];
