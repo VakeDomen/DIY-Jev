@@ -1,0 +1,142 @@
+{
+  "summary": {
+    "total": 12,
+    "passed": 0,
+    "accuracy": 0.0,
+    "wall_seconds": 0.0019139389987685718
+  },
+  "results": [
+    {
+      "name": "refund_explicit",
+      "category": "clear_positive",
+      "expected": "refund",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.18760899911285378,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "shipping_inquiry",
+      "category": "clear_positive",
+      "expected": "shipping",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.160908999532694,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "return_request",
+      "category": "clear_positive",
+      "expected": "return",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.1473420015827287,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "noul_true",
+      "category": "clear_positive",
+      "expected": "true",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.13730099817621522,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "no_refund",
+      "category": "clear_negative",
+      "expected": "false",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.1297250018978957,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "not_billing",
+      "category": "clear_negative",
+      "expected": "false",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.12740199963445775,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "vague_complaint",
+      "category": "ambiguous",
+      "expected": "support",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.13705200035474263,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "implied_refund",
+      "category": "ambiguous",
+      "expected": "exchange",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.12686899935943075,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "names_matter_refund_vs_exchange",
+      "category": "permutation",
+      "expected": "exchange",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.12800599870388396,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "names_matter_cancel_vs_return",
+      "category": "permutation",
+      "expected": "cancel",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.13001600018469617,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "severity_high",
+      "category": "scoring",
+      "expected": "high",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.12039300054311752,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    },
+    {
+      "name": "severity_low",
+      "category": "scoring",
+      "expected": "low",
+      "predicted": null,
+      "confidence": null,
+      "probabilities": null,
+      "latency_ms": 0.11772799916798249,
+      "error": "<urlopen error [Errno 111] Connection refused>",
+      "passed": false
+    }
+  ]
+}
