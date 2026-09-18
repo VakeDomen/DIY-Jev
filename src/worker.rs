@@ -4,7 +4,6 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use serde::Serialize;
 use tokio::sync::oneshot;
 
 use crate::api::EvaluateResponse;
@@ -14,69 +13,9 @@ use crate::inference;
 /// Result type for inference jobs, carried across the channel.
 pub type InferenceResult = Result<EvaluateResponse, InferenceError>;
 
-/// Typed inference error with a semantic kind for HTTP status mapping.
-#[derive(Debug, Clone, Serialize)]
-pub struct InferenceError {
-    #[serde(skip)]
-    pub kind: ErrorKind,
-    pub message: String,
-}
-
-/// Semantic category for an inference error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum ErrorKind {
-    Validation,
-    Backend,
-    Overload,
-    Internal,
-}
-
-impl InferenceError {
-    pub fn validation(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Validation,
-            message: message.into(),
-        }
-    }
-
-    pub fn backend(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Backend,
-            message: message.into(),
-        }
-    }
-
-    pub fn overload(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Overload,
-            message: message.into(),
-        }
-    }
-
-    pub fn internal(message: impl Into<String>) -> Self {
-        Self {
-            kind: ErrorKind::Internal,
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for InferenceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "[{:?}] {}", self.kind, self.message)
-    }
-}
-
-impl std::error::Error for InferenceError {}
-
-impl From<anyhow::Error> for InferenceError {
-    fn from(error: anyhow::Error) -> Self {
-        Self {
-            kind: ErrorKind::Internal,
-            message: format!("{error:#}"),
-        }
-    }
-}
+/// Re-export for callers that match on error kinds.
+pub use crate::error::ErrorKind;
+pub use crate::error::InferenceError;
 
 /// A single inference job submitted by an HTTP handler.
 pub struct Job {
@@ -182,26 +121,7 @@ fn run(
             continue;
         }
 
-        let result = inference::evaluate(&model, &template, &mut context, job.request)
-            .map_err(InferenceError::from);
-
-        // Map classifier errors to proper semantic kinds.
-        let result = result.or_else(|err| {
-            let msg = err.message.clone();
-            if msg.contains("must not be empty")
-                || msg.contains("must have at least")
-                || msg.contains("may have at most")
-                || msg.contains("needs .* tokens, exceeding")
-                || msg.contains("too many questions")
-                || msg.contains("question ")
-            {
-                Err(InferenceError::validation(msg))
-            } else if msg.contains("non-finite") {
-                Err(InferenceError::backend(msg))
-            } else {
-                Err(InferenceError::internal(msg))
-            }
-        });
+        let result = inference::evaluate(&model, &template, &mut context, job.request);
 
         let _ = job.response.send(result);
     }

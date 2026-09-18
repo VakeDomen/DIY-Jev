@@ -7,6 +7,7 @@
 pub mod api;
 pub mod config;
 pub mod download;
+pub mod error;
 pub mod http;
 pub mod inference;
 pub mod init;
@@ -14,5 +15,6 @@ pub mod worker;
 
 pub use api::{Answer, EvaluateRequest, EvaluateResponse, Question, RequestBody, Usage};
 pub use config::Config;
+pub use error::{ErrorKind, InferenceError};
 pub use http::ApiError;
-pub use worker::{ErrorKind, InferenceError, Job};
+pub use worker::Job;

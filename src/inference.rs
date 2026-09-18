@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, bail};
 use llama_cpp_2::{
     context::LlamaContext,
     llama_batch::LlamaBatch,
@@ -10,6 +10,7 @@ use llama_cpp_2::{
 use serde_json::Value;
 
 use crate::api::{Answer, EvaluateRequest, EvaluateResponse, Question, Usage};
+use crate::error::InferenceError;
 
 const SYSTEM_PROMPT: &str = "You are a decision model. Given a STATE and QUESTION, choose exactly one of the allowed options. Reply with only the option label and no explanation.";
 
@@ -44,36 +45,41 @@ pub fn evaluate(
     template: &LlamaChatTemplate,
     ctx: &mut LlamaContext<'_>,
     request: EvaluateRequest,
-) -> Result<EvaluateResponse> {
+) -> Result<EvaluateResponse, InferenceError> {
     if request.questions.is_empty() {
-        bail!("questions must not be empty");
+        return Err(InferenceError::validation("questions must not be empty"));
     }
-    let state = render_state(&request.state)?;
+    let state = render_state(&request.state).map_err(|e| InferenceError::internal(format!("{e}")))?;
     let n_questions = request.questions.len();
 
     let mut plans = Vec::with_capacity(n_questions);
 
     for (name, question) in request.questions {
-        question
-            .validate()
-            .map_err(|error| anyhow!("question {name:?}: {error}"))?;
+        question.validate().map_err(|msg| {
+            InferenceError::validation(format!("question {name:?}: {msg}"))
+        })?;
         let (labels, descriptions) = options(&question);
         let internal_labels = internal_labels(labels.len());
         // Resolve label tokens for this question's specific label set.
-        let label_tokens = resolve_label_tokens(model, &internal_labels)?;
+        let label_tokens = resolve_label_tokens(model, &internal_labels)
+            .map_err(|e| InferenceError::backend(format!("label tokenization failed for {name:?}: {e}")))?;
         let prompt = render_prompt(&state, &question, &internal_labels, &descriptions);
         let messages = vec![
-            LlamaChatMessage::new("system".into(), SYSTEM_PROMPT.into())?,
-            LlamaChatMessage::new("user".into(), prompt)?,
+            LlamaChatMessage::new("system".into(), SYSTEM_PROMPT.into())
+                .map_err(|e| InferenceError::internal(format!("{e}")))?,
+            LlamaChatMessage::new("user".into(), prompt)
+                .map_err(|e| InferenceError::internal(format!("{e}")))?,
         ];
-        let rendered = model.apply_chat_template(template, &messages, true)?;
-        let tokens = model.str_to_token(&rendered, AddBos::Always)?;
+        let rendered = model.apply_chat_template(template, &messages, true)
+            .map_err(|e| InferenceError::backend(format!("chat template failed for {name:?}: {e}")))?;
+        let tokens = model.str_to_token(&rendered, AddBos::Always)
+            .map_err(|e| InferenceError::backend(format!("tokenization failed for {name:?}: {e}")))?;
         if tokens.len() >= ctx.n_ctx() as usize {
-            bail!(
+            return Err(InferenceError::validation(format!(
                 "question {name:?} needs {} tokens, exceeding the {} token context",
                 tokens.len(),
                 ctx.n_ctx()
-            );
+            )));
         }
         let candidate_tokens = internal_labels
             .iter()
@@ -81,9 +87,11 @@ pub fn evaluate(
                 label_tokens
                     .get(label)
                     .copied()
-                    .ok_or_else(|| anyhow!("internal label {label:?} not in resolved set"))
+                    .ok_or_else(|| InferenceError::internal(format!(
+                        "internal label {label:?} not in resolved set for {name:?}"
+                    )))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, InferenceError>>()?;
 
         plans.push(Plan {
             name,
@@ -145,10 +153,11 @@ pub fn evaluate(
     })
 }
 
-fn render_state(state: &Value) -> Result<String> {
+fn render_state(state: &Value) -> Result<String, InferenceError> {
     match state {
         Value::String(text) => Ok(text.clone()),
-        value => serde_json::to_string_pretty(value).context("failed to serialize state"),
+        value => serde_json::to_string_pretty(value)
+            .map_err(|e| InferenceError::internal(format!("failed to serialize state: {e}"))),
     }
 }
 
@@ -232,22 +241,26 @@ fn decode_tokens(
     tokens: &[LlamaToken],
     start_position: usize,
     logits_at_end: bool,
-) -> Result<()> {
+) -> Result<(), InferenceError> {
     let chunk_size = ctx.n_batch() as usize;
     for (chunk_index, chunk) in tokens.chunks(chunk_size).enumerate() {
         let offset = start_position + chunk_index * chunk_size;
         let mut batch = LlamaBatch::new(chunk.len(), 1);
         for (index, token) in chunk.iter().enumerate() {
-            let position = i32::try_from(offset + index)?;
+            let position = i32::try_from(offset + index)
+                .map_err(|e| InferenceError::internal(format!("position overflow: {e}")))?;
             let suffix_index = chunk_index * chunk_size + index;
-            batch.add(
-                *token,
-                position,
-                &[0],
-                logits_at_end && suffix_index + 1 == tokens.len(),
-            )?;
+            batch
+                .add(
+                    *token,
+                    position,
+                    &[0],
+                    logits_at_end && suffix_index + 1 == tokens.len(),
+                )
+                .map_err(|e| InferenceError::internal(format!("batch add failed: {e}")))?;
         }
-        ctx.decode(&mut batch)?;
+        ctx.decode(&mut batch)
+            .map_err(|e| InferenceError::backend(format!("llama decode failed: {e}")))?;
     }
     Ok(())
 }
@@ -256,26 +269,26 @@ fn decode_tokens(
 ///
 /// Replaces the old approach that built a `BTreeMap` over the entire
 /// vocabulary (~128K entries) on every question.
-fn selected_logits(ctx: &LlamaContext<'_>, tokens: &[LlamaToken]) -> Result<Vec<f32>> {
+fn selected_logits(ctx: &LlamaContext<'_>, tokens: &[LlamaToken]) -> Result<Vec<f32>, InferenceError> {
     let logits = ctx.get_logits();
     tokens
         .iter()
         .map(|token| {
             let id = token.0 as usize;
             if id >= logits.len() {
-                return Err(anyhow!(
+                return Err(InferenceError::internal(format!(
                     "candidate token {token:?} id {id} >= logits len {}",
                     logits.len()
-                ));
+                )));
             }
             Ok(logits[id])
         })
         .collect()
 }
 
-fn softmax(logits: &[f32]) -> Result<Vec<f32>> {
+fn softmax(logits: &[f32]) -> Result<Vec<f32>, InferenceError> {
     if logits.iter().any(|&x| !x.is_finite()) {
-        bail!("non-finite logit values encountered before softmax");
+        return Err(InferenceError::backend("non-finite logit values encountered before softmax"));
     }
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let mut values = logits

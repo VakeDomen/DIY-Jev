@@ -10,7 +10,8 @@ use tokio::sync::oneshot;
 
 use crate::api::{EvaluateResponse, RequestBody};
 use crate::config::Config;
-use crate::worker::{ErrorKind, Job, WorkerHandle};
+use crate::error::ErrorKind;
+use crate::worker::{Job, WorkerHandle};
 
 /// HTTP-layer error that directly implements `IntoResponse`.
 #[derive(Debug)]
