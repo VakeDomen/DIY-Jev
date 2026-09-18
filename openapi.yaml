@@ -22,6 +22,10 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /v1/evaluate:
@@ -35,12 +39,16 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
-  /ai/run:
+  /v1/systemone:
     post:
-      operationId: cloudflareAiRun
-      summary: Cloudflare AI-compatible evaluation route
+      operationId: evaluateSystemOne
+      summary: Evaluate structured questions against shared state
       requestBody:
         $ref: '#/components/requestBodies/EvaluateRequest'
       responses:
@@ -48,6 +56,27 @@ paths:
           $ref: '#/components/responses/EvaluateResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /ai/run:
+    post:
+      operationId: cloudflareAiRun
+      summary: Cloudflare AI-compatible evaluation route
+      requestBody:
+        $ref: '#/components/requestBodies/CloudflareEvaluateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/EvaluateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '502':
+          $ref: '#/components/responses/BadGateway'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
   /health:
@@ -64,6 +93,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/HealthResponse'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 components:
   requestBodies:
     EvaluateRequest:
@@ -71,33 +102,13 @@ components:
       content:
         application/json:
           schema:
-            oneOf:
-              - $ref: '#/components/schemas/EvaluateInput'
-              - $ref: '#/components/schemas/CloudflareEvaluateInput'
-          examples:
-            direct:
-              value:
-                state: I ordered size 10 shoes but received size 8.
-                questions:
-                  department:
-                    type: choice
-                    instructions: Which department handles this?
-                    criteria:
-                      returns: Returns and exchanges
-                      shipping: Delivery issues
-                      billing: Charges and refunds
-                  refund:
-                    type: noul
-                    instructions: Is the customer asking for a refund?
-            cloudflare:
-              value:
-                model: typesafe/jev
-                input:
-                  state: I ordered size 10 shoes but received size 8.
-                  questions:
-                    refund:
-                      type: noul
-                      instructions: Is the customer asking for a refund?
+            $ref: '#/components/schemas/EvaluateInput'
+    CloudflareEvaluateRequest:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/CloudflareEvaluateInput'
   responses:
     EvaluateResponse:
       description: Structured answers and token usage.
@@ -106,13 +117,25 @@ components:
           schema:
             $ref: '#/components/schemas/EvaluateResponse'
     BadRequest:
-      description: Invalid JSON, question schema, or inference input.
+      description: Invalid JSON or malformed request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    UnprocessableEntity:
+      description: Request is valid JSON but fails semantic validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    BadGateway:
+      description: The inference backend returned an error.
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
     ServiceUnavailable:
-      description: The inference worker is unavailable or stopped.
+      description: The inference worker is unavailable or queue is full.
       content:
         application/json:
           schema:
@@ -128,7 +151,6 @@ components:
     EvaluateInput:
       type: object
       required: [state, questions]
-      additionalProperties: false
       properties:
         state:
           description: Shared state evaluated by every question.
@@ -140,18 +162,20 @@ components:
             $ref: '#/components/schemas/Question'
     CloudflareEvaluateInput:
       type: object
-      required: [model, input]
-      additionalProperties: false
+      required: [input]
       properties:
         model:
           type: string
-          minLength: 1
           example: typesafe/jev
         input:
           $ref: '#/components/schemas/EvaluateInput'
     Question:
       discriminator:
         propertyName: type
+        mapping:
+          noul: '#/components/schemas/NoulQuestion'
+          choice: '#/components/schemas/ChoiceQuestion'
+          score: '#/components/schemas/ScoreQuestion'
       oneOf:
         - $ref: '#/components/schemas/NoulQuestion'
         - $ref: '#/components/schemas/ChoiceQuestion'
@@ -159,7 +183,6 @@ components:
     NoulQuestion:
       type: object
       required: [type, instructions]
-      additionalProperties: false
       properties:
         type:
           const: noul
@@ -171,16 +194,16 @@ components:
           required: ['true', 'false']
           minProperties: 2
           maxProperties: 2
-          additionalProperties: false
           properties:
             'true':
               type: string
+              nullable: true
             'false':
               type: string
+              nullable: true
     ChoiceQuestion:
       type: object
       required: [type, instructions, criteria]
-      additionalProperties: false
       properties:
         type:
           const: choice
@@ -190,13 +213,13 @@ components:
         criteria:
           type: object
           minProperties: 2
-          maxProperties: 26
+          maxProperties: 255
           additionalProperties:
             type: string
+            nullable: true
     ScoreQuestion:
       type: object
       required: [type, instructions, criteria]
-      additionalProperties: false
       properties:
         type:
           const: score
@@ -206,13 +229,12 @@ components:
         criteria:
           type: array
           minItems: 2
-          maxItems: 26
+          maxItems: 10
           items:
             type: string
     EvaluateResponse:
       type: object
       required: [model, answers, usage]
-      additionalProperties: false
       properties:
         model:
           type: string
@@ -226,6 +248,10 @@ components:
     Answer:
       discriminator:
         propertyName: type
+        mapping:
+          noul: '#/components/schemas/NoulAnswer'
+          choice: '#/components/schemas/ChoiceAnswer'
+          score: '#/components/schemas/ScoreAnswer'
       oneOf:
         - $ref: '#/components/schemas/NoulAnswer'
         - $ref: '#/components/schemas/ChoiceAnswer'
@@ -233,7 +259,6 @@ components:
     NoulAnswer:
       type: object
       required: [type, noul]
-      additionalProperties: false
       properties:
         type:
           const: noul
@@ -244,7 +269,6 @@ components:
     ChoiceAnswer:
       type: object
       required: [type, choice, confidence, probabilities]
-      additionalProperties: false
       properties:
         type:
           const: choice
@@ -264,7 +288,6 @@ components:
     ScoreAnswer:
       type: object
       required: [type, score, confidence, legend, probabilities]
-      additionalProperties: false
       properties:
         type:
           const: score
@@ -290,7 +313,6 @@ components:
     Usage:
       type: object
       required: [input_tokens, output_tokens]
-      additionalProperties: false
       properties:
         input_tokens:
           type: integer
@@ -301,7 +323,6 @@ components:
     Error:
       type: object
       required: [error]
-      additionalProperties: false
       properties:
         error:
           type: string

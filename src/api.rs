@@ -34,27 +34,36 @@ impl RequestBody {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     Noul {
-        instructions: String,
+        instructions: Value,
         #[serde(default)]
-        criteria: Option<BTreeMap<String, String>>,
+        criteria: Option<BTreeMap<String, Option<String>>>,
     },
     Choice {
-        instructions: String,
-        criteria: BTreeMap<String, String>,
+        instructions: Value,
+        #[serde(default)]
+        criteria: BTreeMap<String, Option<String>>,
     },
     Score {
-        instructions: String,
+        instructions: Value,
         criteria: Vec<String>,
     },
 }
 
 impl Question {
+    /// Render the instructions field as a string suitable for prompt construction.
+    pub fn instructions_str(&self) -> String {
+        let value = match self {
+            Self::Noul { instructions, .. }
+            | Self::Choice { instructions, .. }
+            | Self::Score { instructions, .. } => instructions,
+        };
+        render_instructions(value)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        let (instructions, option_count) = match self {
-            Self::Noul {
-                instructions,
-                criteria,
-            } => {
+        let instructions_str = self.instructions_str();
+        let option_count = match self {
+            Self::Noul { criteria, .. } => {
                 if let Some(criteria) = criteria {
                     let valid = criteria.len() == 2
                         && criteria.contains_key("true")
@@ -63,25 +72,24 @@ impl Question {
                         return Err("noul criteria must contain exactly `true` and `false`".into());
                     }
                 }
-                (instructions, 2)
+                2
             }
-            Self::Choice {
-                instructions,
-                criteria,
-            } => (instructions, criteria.len()),
-            Self::Score {
-                instructions,
-                criteria,
-            } => (instructions, criteria.len()),
+            Self::Choice { criteria, .. } => criteria.len(),
+            Self::Score { criteria, .. } => criteria.len(),
         };
-        if instructions.trim().is_empty() {
+        if instructions_str.trim().is_empty() {
             return Err("instructions must not be empty".into());
         }
         if option_count < 2 {
             return Err("a question must have at least two criteria".into());
         }
-        if option_count > 26 {
-            return Err("a question may have at most 26 criteria".into());
+        if option_count > 255 {
+            return Err("a question may have at most 255 criteria".into());
+        }
+        if let Question::Score { criteria, .. } = self {
+            if criteria.len() > 10 {
+                return Err("a score question may have at most 10 criteria".into());
+            }
         }
         Ok(())
     }
@@ -119,6 +127,25 @@ pub struct Usage {
     pub output_tokens: usize,
 }
 
+/// Render a `Value` instructions field to a prompt string.
+///
+/// Supports strings directly, objects rendered as compact JSON, and arrays
+/// joined into a bullet list.
+pub fn render_instructions(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                Value::String(s) => format!("- {s}"),
+                other => format!("- {}", serde_json::to_string(other).unwrap_or_default()),
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,8 +164,8 @@ mod tests {
     #[test]
     fn rejects_invalid_noul_criteria() {
         let question = Question::Noul {
-            instructions: "A question".into(),
-            criteria: Some(BTreeMap::from([("yes".into(), "Yes".into())])),
+            instructions: Value::String("A question".into()),
+            criteria: Some(BTreeMap::from([("yes".into(), Some("Yes".into()))])),
         };
         assert!(question.validate().is_err());
     }

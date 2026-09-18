@@ -6,9 +6,6 @@ pub async fn download_model() -> Result<()> {
     if std::env::var_os("JEV_MODEL_PATH").is_some() {
         return Ok(());
     }
-    unsafe {
-        std::env::set_var("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1");
-    }
 
     let models_dir = PathBuf::from("./models");
     if !models_dir.is_dir() {

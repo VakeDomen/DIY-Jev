@@ -1,0 +1,3 @@
+{"id":"capital_france","q":"What is the capital of France?","opts":["Paris","Berlin","Lyon","Madrid"],"gold":0}
+{"id":"photosynthesis","q":"Which gas do plants absorb during photosynthesis?","opts":["oxygen","carbon dioxide","nitrogen","hydrogen"],"gold":1}
+{"id":"water_freezing","q":"At standard atmospheric pressure, at what Celsius temperature does water freeze?","opts":["0","32","100","-100"],"gold":0}
