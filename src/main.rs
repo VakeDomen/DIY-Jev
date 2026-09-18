@@ -29,7 +29,11 @@ async fn run() -> Result<()> {
 
     download_model().await?;
     let (handle, inference_thread) = granite_jev::worker::start(config.clone())?;
-    let state = AppState { worker: handle };
+    let state = AppState {
+        worker: handle,
+        model_identity: config.model_identity(),
+        valid_model_aliases: config.valid_model_aliases().into_iter().map(String::from).collect(),
+    };
 
     let app = router(&config, state);
 

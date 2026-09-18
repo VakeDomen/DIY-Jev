@@ -17,12 +17,30 @@ pub enum RequestBody {
     Direct(EvaluateRequest),
     Cloudflare {
         #[serde(default, rename = "model")]
-        _model: Option<String>,
+        model: Option<String>,
         input: EvaluateRequest,
     },
 }
 
 impl RequestBody {
+    /// Validate the model field (if present) and return the inner request.
+    ///
+    /// Returns `Err` if the model field is set to an unrecognised value.
+    pub fn validate_model(&self, allowed_aliases: &[&str]) -> Result<(), String> {
+        let model = match self {
+            Self::Direct(_) => return Ok(()),
+            Self::Cloudflare { model, .. } => model.as_deref(),
+        };
+        match model {
+            None => Ok(()),
+            Some(name) if allowed_aliases.contains(&name) => Ok(()),
+            Some(name) => Err(format!(
+                "unsupported model: {name:?}. Supported models: {}",
+                allowed_aliases.join(", ")
+            )),
+        }
+    }
+
     pub fn into_input(self) -> EvaluateRequest {
         match self {
             Self::Direct(input) | Self::Cloudflare { input, .. } => input,

@@ -72,4 +72,14 @@ impl Config {
     pub fn model_identity(&self) -> String {
         "granite-jev-0.1.0".into()
     }
+
+    /// Return the list of valid model aliases accepted in the request body.
+    pub fn valid_model_aliases(&self) -> Vec<&str> {
+        vec![
+            "typesafe/jev",
+            "@cf/typesafe/jev",
+            "granite-jev",
+            "granite-jev-0.1.0",
+        ]
+    }
 }

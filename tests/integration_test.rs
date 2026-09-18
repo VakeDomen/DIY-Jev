@@ -164,7 +164,7 @@ fn cloudflare_wrapper() {
     }"#;
     let body: RequestBody = serde_json::from_str(json).unwrap();
     match body {
-        RequestBody::Cloudflare { _model, input } => {
+        RequestBody::Cloudflare { model: _model, input } => {
             assert_eq!(_model, Some("typesafe/jev".into()));
             assert_eq!(input.questions.len(), 1);
         }
