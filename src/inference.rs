@@ -51,6 +51,91 @@ struct Plan {
     prompt_tokens: Vec<LlamaToken>,
 }
 
+/// Phase 1 — Validate a single question and prepare its inference Plan.
+///
+/// Builds the prompt, tokenizes it, resolves the candidate label tokens, and
+/// checks that the prompt fits within the model's context window.
+fn prepare_plan(
+    model: &LlamaModel,
+    template: &LlamaChatTemplate,
+    ctx: &LlamaContext<'_>,
+    name: String,
+    question: Question,
+    state: &str,
+) -> Result<Plan, InferenceError> {
+    question.validate().map_err(|msg| {
+        InferenceError::validation(format!("question {name:?}: {msg}"))
+    })?;
+    let (labels, descriptions) = options(&question);
+    let internal_labels = internal_labels(labels.len());
+
+    // Resolve candidate tokens (A/B/C... or 0/1/2...) for this question.
+    let label_tokens = resolve_label_tokens(model, &internal_labels)
+        .map_err(|e| InferenceError::backend(format!("label tokenization failed for {name:?}: {e}")))?;
+
+    // Render the prompt and tokenize it.
+    let prompt = render_prompt(state, &question, &internal_labels, &descriptions);
+    let messages = vec![
+        LlamaChatMessage::new("system".into(), SYSTEM_PROMPT.into())
+            .map_err(|e| InferenceError::internal(format!("{e}")))?,
+        LlamaChatMessage::new("user".into(), prompt)
+            .map_err(|e| InferenceError::internal(format!("{e}")))?,
+    ];
+    let rendered = model.apply_chat_template(template, &messages, true)
+        .map_err(|e| InferenceError::backend(format!("chat template failed for {name:?}: {e}")))?;
+    let tokens = model.str_to_token(&rendered, AddBos::Always)
+        .map_err(|e| InferenceError::backend(format!("tokenization failed for {name:?}: {e}")))?;
+
+    // Guard against context overflow.
+    if tokens.len() >= ctx.n_ctx() as usize {
+        return Err(InferenceError::validation(format!(
+            "question {name:?} needs {} tokens, exceeding the {} token context",
+            tokens.len(),
+            ctx.n_ctx()
+        )));
+    }
+
+    // Collect the token IDs for the candidate labels in order.
+    let candidate_tokens = internal_labels
+        .iter()
+        .map(|label| {
+            label_tokens
+                .get(label)
+                .copied()
+                .ok_or_else(|| InferenceError::internal(format!(
+                    "internal label {label:?} not in resolved set for {name:?}"
+                )))
+        })
+        .collect::<Result<Vec<_>, InferenceError>>()?;
+
+    Ok(Plan {
+        name,
+        question,
+        labels,
+        candidate_tokens,
+        prompt_tokens: tokens,
+    })
+}
+
+/// Phase 2 — Run a single plan through the model.
+///
+/// Feeds the plan's prompt tokens into the context (previously cleared by the
+/// caller), extracts logits for the candidate labels, normalises them, and
+/// builds the corresponding `Answer`.
+fn run_plan(
+    ctx: &mut LlamaContext<'_>,
+    plan: &Plan,
+) -> Result<Answer, InferenceError> {
+    decode_tokens(ctx, &plan.prompt_tokens, 0, true)?;
+    let logits = selected_logits(ctx, &plan.candidate_tokens)?;
+    let probabilities = softmax(&logits)?;
+    Ok(make_answer(
+        plan.question.clone(),
+        plan.labels.clone(),
+        probabilities,
+    ))
+}
+
 pub fn evaluate(
     model: &LlamaModel,
     template: &LlamaChatTemplate,
@@ -60,107 +145,34 @@ pub fn evaluate(
     if request.questions.is_empty() {
         return Err(InferenceError::validation("questions must not be empty"));
     }
-    let state = render_state(&request.state).map_err(|e| InferenceError::internal(format!("{e}")))?;
-    let n_questions = request.questions.len();
+    let state = render_state(&request.state)
+        .map_err(|e| InferenceError::internal(format!("{e}")))?;
 
-    let mut plans = Vec::with_capacity(n_questions);
-
+    // ── Phase 1: Prepare all plans ────────────────────────────────────────
+    let mut plans = Vec::with_capacity(request.questions.len());
     for (name, question) in request.questions {
-        question.validate().map_err(|msg| {
-            InferenceError::validation(format!("question {name:?}: {msg}"))
-        })?;
-        let (labels, descriptions) = options(&question);
-        let internal_labels = internal_labels(labels.len());
-        // Resolve label tokens for this question's specific label set.
-        let label_tokens = resolve_label_tokens(model, &internal_labels)
-            .map_err(|e| InferenceError::backend(format!("label tokenization failed for {name:?}: {e}")))?;
-        let prompt = render_prompt(&state, &question, &internal_labels, &descriptions);
-        let messages = vec![
-            LlamaChatMessage::new("system".into(), SYSTEM_PROMPT.into())
-                .map_err(|e| InferenceError::internal(format!("{e}")))?,
-            LlamaChatMessage::new("user".into(), prompt)
-                .map_err(|e| InferenceError::internal(format!("{e}")))?,
-        ];
-        let rendered = model.apply_chat_template(template, &messages, true)
-            .map_err(|e| InferenceError::backend(format!("chat template failed for {name:?}: {e}")))?;
-        let tokens = model.str_to_token(&rendered, AddBos::Always)
-            .map_err(|e| InferenceError::backend(format!("tokenization failed for {name:?}: {e}")))?;
-        if tokens.len() >= ctx.n_ctx() as usize {
-            return Err(InferenceError::validation(format!(
-                "question {name:?} needs {} tokens, exceeding the {} token context",
-                tokens.len(),
-                ctx.n_ctx()
-            )));
-        }
-        let candidate_tokens = internal_labels
-            .iter()
-            .map(|label| {
-                label_tokens
-                    .get(label)
-                    .copied()
-                    .ok_or_else(|| InferenceError::internal(format!(
-                        "internal label {label:?} not in resolved set for {name:?}"
-                    )))
-            })
-            .collect::<Result<Vec<_>, InferenceError>>()?;
-
-        plans.push(Plan {
-            name,
-            question,
-            labels,
-            candidate_tokens,
-            prompt_tokens: tokens,
-        });
+        let plan = prepare_plan(model, template, ctx, name, question, &state)?;
+        plans.push(plan);
     }
 
-    // For a single question, use ordinary prefill for the entire prompt
-    // (no shared-prefix splitting needed).
-    if n_questions == 1 {
-        let plan = plans.remove(0);
-        ctx.clear_kv_cache();
-        decode_tokens(ctx, &plan.prompt_tokens, 0, true)?;
-        let logits = selected_logits(ctx, &plan.candidate_tokens)?;
-        let probabilities = softmax(&logits)?;
-        return Ok(EvaluateResponse {
-            model: "granite-jev-0.1.0".into(),
-            answers: BTreeMap::from([(
-                plan.name,
-                make_answer(plan.question, plan.labels, probabilities),
-            )]),
-            usage: Usage {
-                input_tokens: plan.prompt_tokens.len(),
-                output_tokens: 1,
-            },
-        });
-    }
-
-    // Process each question independently to guarantee correctness.
-    // (The shared-prefix KV-cache optimization was removed because
-    // clear_kv_cache_seq did not produce equivalent results on the
-    // Granite architecture. Future work: restore using proper sequence
-    // batching with multiple sequence IDs.)
+    // ── Phase 2: Run inference ────────────────────────────────────────────
     let mut answers = BTreeMap::new();
-    let mut usage = Usage {
-        input_tokens: 0,
-        output_tokens: 0,
-    };
+    let mut total_input = 0usize;
+
     for plan in &plans {
         ctx.clear_kv_cache();
-        decode_tokens(ctx, &plan.prompt_tokens, 0, true)?;
-        let logits = selected_logits(ctx, &plan.candidate_tokens)?;
-        let probabilities = softmax(&logits)?;
-        usage.input_tokens += plan.prompt_tokens.len();
-        usage.output_tokens += 1;
-        answers.insert(
-            plan.name.clone(),
-            make_answer(plan.question.clone(), plan.labels.clone(), probabilities),
-        );
+        let answer = run_plan(ctx, plan)?;
+        total_input += plan.prompt_tokens.len();
+        answers.insert(plan.name.clone(), answer);
     }
 
     Ok(EvaluateResponse {
         model: "granite-jev-0.1.0".into(),
         answers,
-        usage,
+        usage: Usage {
+            input_tokens: total_input,
+            output_tokens: plans.len(),
+        },
     })
 }
 
