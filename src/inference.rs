@@ -114,38 +114,26 @@ pub fn evaluate(
         });
     }
 
-    // Multiple questions: share the common prefix across all branches.
-    let common_len = common_prefix_len(&plans).min(
-        plans
-            .iter()
-            .map(|plan| plan.prompt_tokens.len() - 1)
-            .min()
-            .unwrap_or(0),
-    );
-    ctx.clear_kv_cache();
-    if common_len > 0 {
-        decode_tokens(ctx, &plans[0].prompt_tokens[..common_len], 0, false)?;
-    }
-
+    // Process each question independently to guarantee correctness.
+    // (The shared-prefix KV-cache optimization was removed because
+    // clear_kv_cache_seq did not produce equivalent results on the
+    // Granite architecture. Future work: restore using proper sequence
+    // batching with multiple sequence IDs.)
     let mut answers = BTreeMap::new();
     let mut usage = Usage {
-        input_tokens: common_len,
+        input_tokens: 0,
         output_tokens: 0,
     };
-    for plan in plans {
-        let cleared = ctx.clear_kv_cache_seq(Some(0), Some(u32::try_from(common_len)?), None)?;
-        if !cleared {
-            bail!("the model architecture does not support shared-prefix rollback");
-        }
-        let suffix = &plan.prompt_tokens[common_len..];
-        decode_tokens(ctx, suffix, common_len, true)?;
+    for plan in &plans {
+        ctx.clear_kv_cache();
+        decode_tokens(ctx, &plan.prompt_tokens, 0, true)?;
         let logits = selected_logits(ctx, &plan.candidate_tokens)?;
         let probabilities = softmax(&logits)?;
-        usage.input_tokens += suffix.len();
+        usage.input_tokens += plan.prompt_tokens.len();
         usage.output_tokens += 1;
         answers.insert(
-            plan.name,
-            make_answer(plan.question, plan.labels, probabilities),
+            plan.name.clone(),
+            make_answer(plan.question.clone(), plan.labels.clone(), probabilities),
         );
     }
 
@@ -229,19 +217,6 @@ fn render_prompt(
             .join("\n"),
     };
     format!("STATE:\n{state}\n\nQUESTION:\n{instructions}\n\nOPTIONS:\n{options}\n\nANSWER:")
-}
-
-fn common_prefix_len(plans: &[Plan]) -> usize {
-    let Some(first) = plans.first() else {
-        return 0;
-    };
-    (0..first.prompt_tokens.len())
-        .take_while(|&index| {
-            plans
-                .iter()
-                .all(|plan| plan.prompt_tokens.get(index) == first.prompt_tokens.get(index))
-        })
-        .count()
 }
 
 fn decode_tokens(
@@ -378,22 +353,5 @@ mod tests {
             Answer::Score { score, .. } => assert!((score - 1.6).abs() < 1e-6),
             _ => panic!("wrong answer type"),
         }
-    }
-
-    #[test]
-    fn finds_the_prefix_shared_by_question_plans() {
-        let question = || Question::Noul {
-            instructions: Value::String("question".into()),
-            criteria: None,
-        };
-        let plan = |tokens: Vec<i32>| Plan {
-            name: "name".into(),
-            question: question(),
-            labels: vec!["true".into(), "false".into()],
-            candidate_tokens: vec![],
-            prompt_tokens: tokens.into_iter().map(LlamaToken::new).collect(),
-        };
-        let plans = vec![plan(vec![1, 2, 3, 4]), plan(vec![1, 2, 8])];
-        assert_eq!(common_prefix_len(&plans), 2);
     }
 }
