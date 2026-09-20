@@ -106,6 +106,11 @@ HTTP process and `GET /ready` reports whether the model worker is available.
 
 ## Benchmark
 
+![Combined benchmark radar comparing DIY Jev models with published OpenJev results](benchmarks/charts/combined-radar.png)
+
+*Accuracy on the reconstructed nine-axis suite. OpenJev values come from its
+published result files; polygon area is not an aggregate score.*
+
 Start the server, then run the included OpenJev radar reconstruction:
 
 ```sh
