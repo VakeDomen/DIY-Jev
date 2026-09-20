@@ -23,6 +23,8 @@ pub struct Config {
     pub model_identity: String,
     /// Valid model aliases accepted in Cloudflare-style requests.
     pub valid_model_aliases: Vec<String>,
+    /// Custom system prompt text. If empty, the built-in default is used.
+    pub system_prompt_text: Option<String>,
 }
 
 impl Config {
@@ -148,7 +150,12 @@ impl Config {
             ],
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases)
+        let system_prompt_text = match std::env::var("JEV_SYSTEM_PROMPT") {
+            Ok(val) if !val.is_empty() => Some(val),
+            _ => None,
+        };
+
+        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases, system_prompt_text)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -167,6 +174,7 @@ impl Config {
         hf_download: HfDownloadConfig,
         model_identity: String,
         valid_model_aliases: Vec<String>,
+        system_prompt_text: Option<String>,
     ) -> Result<Self> {
         if batch_size == 0 {
             anyhow::bail!("batch_size must be positive, got 0");
@@ -199,6 +207,7 @@ impl Config {
             hf_download,
             model_identity,
             valid_model_aliases,
+            system_prompt_text,
         })
     }
 

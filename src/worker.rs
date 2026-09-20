@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use crate::api::EvaluateResponse;
 use crate::config::Config;
 use crate::inference;
+use crate::prompts::SystemPrompt;
 
 /// Result type for inference jobs, carried across the channel.
 pub type InferenceResult = Result<EvaluateResponse, InferenceError>;
@@ -122,9 +123,17 @@ fn run(
         "llama context created"
     );
 
+    // Tokenize both system prompts once at startup.
+    let system = SystemPrompt::new(&model, None, None)?;
+    tracing::info!(
+        choice_len = system.choice_tokens.len(),
+        noul_len = system.noul_tokens.len(),
+        "system prompts cached"
+    );
+
     // Resolve boolean tokens once at startup so every inference call can
     // skip this work.
-    let bool_tokens = inference::resolve_boolean_tokens(&model)?;
+    let bool_tokens = inference::resolve_boolean_tokens(&model, &system)?;
 
     ready.send(Ok(())).ok();
     // Arm the readiness guard so /ready returns 200. The guard's Drop
@@ -164,6 +173,7 @@ fn run(
                     inference::evaluate(
                         &model,
                         &mut context,
+                        &system,
                         request,
                         &bool_tokens,
                         &config.model_identity,
@@ -174,6 +184,7 @@ fn run(
             inference::evaluate_many(
                 &model,
                 &mut context,
+                &system,
                 requests,
                 &bool_tokens,
                 &config.model_identity,

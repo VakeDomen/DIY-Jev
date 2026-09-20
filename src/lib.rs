@@ -11,6 +11,7 @@ pub mod error;
 pub mod http;
 pub mod inference;
 pub mod init;
+pub mod prompts;
 pub mod worker;
 
 pub use api::{Answer, EvaluateRequest, EvaluateResponse, Question, RequestBody, Usage};
