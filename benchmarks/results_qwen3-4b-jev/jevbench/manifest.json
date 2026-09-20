@@ -1,0 +1,21 @@
+{
+  "adapter": "typesafe",
+  "charged_usd": 0.0,
+  "cost_basis": "self_hosted_unpriced",
+  "dataset_hash": "dc3995d8ae1e2fc8e81ce38431add509eb8bb39b85aadfd0c7c32079382dde51",
+  "delay_s": 0.0,
+  "endpoint": "http://127.0.0.1:8080",
+  "finished_utc": "2026-09-20T21:26:20.421241+00:00",
+  "key_env_used": false,
+  "n_attempted": 231,
+  "n_planned": 231,
+  "price_input_per_m": null,
+  "price_output_per_m": null,
+  "request_options": {},
+  "requested_model": "qwen3.6-35b-a3b-jev",
+  "resolved_models": [
+    "qwen3.5-4b-jev"
+  ],
+  "run_label": "qwen3.6-35b-a3b-jev",
+  "started_utc": "2026-09-20T21:25:41.138989+00:00"
+}
