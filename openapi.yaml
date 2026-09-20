@@ -8,8 +8,8 @@ info:
     Probabilities are constrained softmax scores over the legal answer labels;
     they are not TypeSafe's proprietary calibrated probabilities.
 servers:
-  - url: http://127.0.0.1:8080
-    description: Local server (default)
+  - url: http://localhost:8080
+    description: Local server
 paths:
   /:
     post:
@@ -119,12 +119,54 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/EvaluateInput'
+          example:
+            state: "I ordered size 10 shoes but received size 8."
+            questions:
+              department:
+                type: choice
+                instructions: "Which department handles this?"
+                criteria:
+                  returns: "Returns and exchanges"
+                  shipping: "Delivery issues"
+                  billing: "Charges and refunds"
+              refund:
+                type: noul
+                instructions: "Is the customer asking for a refund?"
+              severity:
+                type: score
+                instructions: "How severe is the problem?"
+                criteria:
+                  - Minor
+                  - "Moderate: wrong item"
+                  - "Major: safety or financial loss"
     CloudflareEvaluateRequest:
       required: true
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/CloudflareEvaluateInput'
+          example:
+            model: typesafe/jev
+            input:
+              state: "I ordered size 10 shoes but received size 8."
+              questions:
+                department:
+                  type: choice
+                  instructions: "Which department handles this?"
+                  criteria:
+                    returns: "Returns and exchanges"
+                    shipping: "Delivery issues"
+                    billing: "Charges and refunds"
+                refund:
+                  type: noul
+                  instructions: "Is the customer asking for a refund?"
+                severity:
+                  type: score
+                  instructions: "How severe is the problem?"
+                  criteria:
+                    - Minor
+                    - "Moderate: wrong item"
+                    - "Major: safety or financial loss"
   responses:
     EvaluateResponse:
       description: Structured answers and token usage.
@@ -132,6 +174,35 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/EvaluateResponse'
+          example:
+            model: "diy-jev-0.1.0"
+            answers:
+              department:
+                type: choice
+                choice: returns
+                confidence: 0.85
+                probabilities:
+                  returns: 0.85
+                  shipping: 0.10
+                  billing: 0.05
+              refund:
+                type: noul
+                noul: 0.92
+              severity:
+                type: score
+                score: 1.7
+                confidence: 0.65
+                legend:
+                  "0": Minor
+                  "1": "Moderate: wrong item"
+                  "2": "Major: safety or financial loss"
+                probabilities:
+                  "0": 0.10
+                  "1": 0.25
+                  "2": 0.65
+            usage:
+              input_tokens: 128
+              output_tokens: 3
     BadRequest:
       description: Invalid JSON or malformed request.
       content:
