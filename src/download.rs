@@ -10,11 +10,11 @@ pub struct HfDownloadConfig {
 }
 
 impl HfDownloadConfig {
-    /// Default fallback: Granite 4.2 3B Q4_K_M GGUF (overridden by env vars).
+    /// Default fallback: Qwen3 4B Q4_K_M GGUF (overridden by env vars).
     pub fn default_fallback() -> Self {
         Self {
-            repo: "ibm-granite/granite-4.2-3b-GGUF".into(),
-            filename: "granite-4.2-3b-Q4_K_M.gguf".into(),
+            repo: "Qwen/Qwen3-4B-Instruct-GGUF".into(),
+            filename: "qwen3-4b-instruct-Q4_K_M.gguf".into(),
         }
     }
 
@@ -22,9 +22,9 @@ impl HfDownloadConfig {
     /// Falls back to defaults if neither is set.
     pub fn from_env() -> Self {
         let repo = std::env::var("JEV_HF_REPO")
-            .unwrap_or_else(|_| "ibm-granite/granite-4.2-3b-GGUF".into());
+            .unwrap_or_else(|_| "Qwen/Qwen3-4B-Instruct-GGUF".into());
         let filename = std::env::var("JEV_HF_FILENAME")
-            .unwrap_or_else(|_| "granite-4.2-3b-Q4_K_M.gguf".into());
+            .unwrap_or_else(|_| "qwen3-4b-instruct-Q4_K_M.gguf".into());
         Self { repo, filename }
     }
 }

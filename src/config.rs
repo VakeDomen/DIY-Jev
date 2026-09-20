@@ -11,6 +11,8 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub context_size: NonZeroU32,
     pub batch_size: u32,
+    /// Microbatch size for GPU computation (0 = use llama.cpp default).
+    pub ubatch_size: u32,
     pub max_queue: usize,
     pub max_questions: usize,
     pub n_seq_max: u32,
@@ -36,7 +38,7 @@ impl Config {
             // from it instead of always defaulting to the built-in fallback.
             match std::env::var("JEV_HF_FILENAME") {
                 Ok(filename) => format!("./models/{}", filename),
-                Err(_) => "./models/granite-4.2-3b-Q4_K_M.gguf".to_owned(),
+                Err(_) => "./models/qwen3-4b-instruct-Q4_K_M.gguf".to_owned(),
             }
         });
 
@@ -106,7 +108,17 @@ impl Config {
                 }
                 parsed
             }
-            Err(_) => 16,
+            Err(_) => 64,
+        };
+
+        let ubatch_size = match std::env::var("JEV_UBATCH_SIZE") {
+            Ok(value) => {
+                let parsed: u32 = value.parse().with_context(|| {
+                    format!("invalid JEV_UBATCH_SIZE: {value:?} is not a valid u32")
+                })?;
+                parsed
+            }
+            Err(_) => 512,
         };
 
         let request_batch_size = match std::env::var("JEV_REQUEST_BATCH_SIZE") {
@@ -155,7 +167,7 @@ impl Config {
             _ => None,
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases, system_prompt_text)
+        Self::new(model_path, bind_addr, context_size, batch_size, ubatch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases, system_prompt_text)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -166,6 +178,7 @@ impl Config {
         bind_addr: SocketAddr,
         context_size: NonZeroU32,
         batch_size: u32,
+        ubatch_size: u32,
         max_queue: usize,
         max_questions: usize,
         n_seq_max: u32,
@@ -199,6 +212,7 @@ impl Config {
             bind_addr,
             context_size,
             batch_size,
+            ubatch_size,
             max_queue,
             max_questions,
             n_seq_max,

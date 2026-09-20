@@ -23,7 +23,7 @@ fn shared_cache_matches_individual_inference() {
     let model_path = match std::env::var("JEV_TEST_MODEL") {
         Ok(path) => std::path::PathBuf::from(path),
         Err(_) => {
-            let default = std::path::PathBuf::from("./models/granite-4.2-3b-Q4_K_M.gguf");
+            let default = std::path::PathBuf::from("./models/qwen3-4b-instruct-Q4_K_M.gguf");
             if default.is_file() {
                 default
             } else {
@@ -38,6 +38,7 @@ fn shared_cache_matches_individual_inference() {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
         context_size: NonZeroU32::new(2048).unwrap(),
         batch_size: 512,
+        ubatch_size: 512,
         max_queue: 64,
         max_questions: 100,
         n_seq_max: 16,

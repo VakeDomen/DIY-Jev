@@ -119,6 +119,7 @@ fn run(
     tracing::info!(
         context_size = context.n_ctx(),
         batch_size = config.batch_size,
+        ubatch_size = config.ubatch_size,
         n_seq_max = config.n_seq_max,
         "llama context created"
     );

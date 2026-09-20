@@ -54,6 +54,7 @@ pub fn build_context<'model>(
     let ctx_params = LlamaContextParams::default()
         .with_n_ctx(Some(config.context_size))
         .with_n_batch(config.batch_size)
+        .with_n_ubatch(config.ubatch_size)
         .with_n_seq_max(config.n_seq_max)
         .with_kv_unified(true);
 

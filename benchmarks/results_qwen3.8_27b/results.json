@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "backend": {
-    "name": "granite-jev-server",
+    "name": "diy-jev-server",
     "url": "http://127.0.0.1:8080/v1/evaluate",
     "instruction": "Which option correctly answers the question?",
     "state_format": "question"
@@ -456845,7 +456845,7 @@
     }
   ],
   "dataset": {
-    "path": "/home/vake/Projects/Granite4.2-3B-Jev/benchmarks/data/radar-full.jsonl",
+    "path": "./benchmarks/data/radar-full.jsonl",
     "sha256": "c7c9b5d0432e8e5e2b3633637eb731b981f6526ead8b8a259f1295fcd605a067",
     "selection_sha256": "f859281859c15031def6d0211fb703a7f1b08ce17b91cd67c061f2253b620a6c"
   },

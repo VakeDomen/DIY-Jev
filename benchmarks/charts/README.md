@@ -26,9 +26,9 @@ GSM8K distractor ordering, dataset revisions and subset selection can affect com
 
 ## Sources
 
-- /home/vake/Projects/Granite4.2-3B-Jev/benchmarks/results_granite4.2_3b/granite.json
-- /home/vake/Projects/Granite4.2-3B-Jev/benchmarks/results_k2_horizon/granite.json
-- /home/vake/Projects/Granite4.2-3B-Jev/benchmarks/results_qwen3.8_27b/granite.json
-- /home/vake/Projects/Granite4.2-3B-Jev/benchmarks/results_qwen3_4b/granite.json
+- ./benchmarks/results_granite4.2_3b/granite.json
+- ./benchmarks/results_k2_horizon/granite.json
+- ./benchmarks/results_qwen3.8_27b/granite.json
+- ./benchmarks/results_qwen3_4b/granite.json
 - https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json
 - https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_extra_mc.json
