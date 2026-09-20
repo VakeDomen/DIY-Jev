@@ -17,6 +17,44 @@ and a score is the probability-weighted mean of its rubric indexes.
 
 ## Run
 
+Enable experimental cross-request batching with `JEV_REQUEST_BATCH_SIZE=10`.
+Queued single-question requests use independent candidate sequence IDs.
+`JEV_REQUEST_BATCH_SIZE` defaults to `1` (the individual baseline), and
+`JEV_REQUEST_BATCH_WAIT_MS` defaults to `2`.
+Requests are grouped into waves constrained by `JEV_N_SEQ_MAX` and the context
+token budget; the default 16 sequences fits four 4-choice requests per wave.
+Multi-question requests retain individual evaluation. Disconnected queued
+callers are skipped. A decode failure fails the affected wave, while validation
+errors are handled per request. This is bounded microbatching, not continuous
+admission of new requests during an active wave.
+
+Batch shape can affect model scores: the local Qwen Q4 CPU test showed a
+Score probability shift of roughly 0.28 with ordinary microbatch settings.
+Batching is therefore opt-in; validate accuracy on your model/backend before
+using it for benchmark comparisons. No GPU throughput gain has been measured.
+
+Compare throughput and p95 latency with request batch sizes 1, 2, 4 and 10.
+Increasing `JEV_N_SEQ_MAX` permits more candidates per wave but consumes more
+model-dependent memory. Enable `RUST_LOG=diy_jev=debug` to see wave sizes.
+The opt-in CPU-capable sequence-isolation test fixes physical microbatch size
+to 1 and checks probabilities within 0.001. Set `JEV_TEST_UBATCH=32` to check
+batch-dependent numerical drift as well (this currently fails on Qwen Q4 CPU).
+Run the isolation test with:
+
+```sh
+JEV_TEST_MODEL=./models/qwen3-4b-instruct-Q4_K_M.gguf \
+  cargo test --release --no-default-features --test cross_request_test
+```
+
+Inference now uses raw tagged prompts, without applying or requiring a model
+chat template. Instructions precede escaped `<state>`, `<question>`, and
+`<candidate>` data, followed by an open `<answer>` tag and a newline to prevent
+the tokenizer from merging the tag with the answer. Noul omits
+the candidate. The model's next-token logits for lowercase `true` and `false`
+are scored at that boundary; no answer text or closing tag is generated.
+Startup verifies both continuations are single tokens without changing the
+prompt's token prefix. Existing candidate batching and scoring are retained.
+
 ```sh
 cargo run --release
 ```

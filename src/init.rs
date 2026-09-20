@@ -3,7 +3,7 @@ use llama_cpp_2::{
     LogOptions,
     context::{LlamaContext, params::LlamaContextParams},
     llama_backend::LlamaBackend,
-    model::{LlamaChatTemplate, LlamaModel, params::LlamaModelParams},
+    model::{LlamaModel, params::LlamaModelParams},
     send_logs_to_tracing,
 };
 
@@ -17,14 +17,13 @@ pub fn init_backend() -> Result<LlamaBackend> {
 pub fn load_model(
     backend: &LlamaBackend,
     config: &Config,
-) -> Result<(LlamaModel, LlamaChatTemplate)> {
+) -> Result<LlamaModel> {
     tracing::info!(path = %config.model_path, "loading model weights");
     let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
 
     let model = LlamaModel::load_from_file(backend, &config.model_path, &model_params)
         .with_context(|| format!("failed to load model from {}", config.model_path))?;
 
-    let template = model.chat_template(None)?;
 
     // Log model metadata
     let n_vocab = model.n_vocab();
@@ -44,7 +43,7 @@ pub fn load_model(
         "model loaded successfully"
     );
 
-    Ok((model, template))
+    Ok(model)
 }
 
 pub fn build_context<'model>(

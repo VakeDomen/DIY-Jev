@@ -40,13 +40,16 @@ fn shared_cache_matches_individual_inference() {
         max_queue: 64,
         max_questions: 100,
         n_seq_max: 16,
+        hf_download: diy_jev::download::HfDownloadConfig::default_fallback(),
+        model_identity: "test-model".into(),
+        valid_model_aliases: vec!["test-model".into()],
     };
 
     let backend = init_backend().expect("failed to init llama backend");
-    let (model, template) = load_model(&backend, &config).expect("failed to load model");
+    let model = load_model(&backend, &config).expect("failed to load model");
     let mut ctx = build_context(&backend, &model, &config).expect("failed to build context");
 
-    let bool_tokens = resolve_boolean_tokens(&model, &template)
+    let bool_tokens = resolve_boolean_tokens(&model)
         .expect("failed to resolve boolean tokens");
 
     // ── Test scenarios ──────────────────────────────────────────────────
@@ -166,7 +169,7 @@ fn shared_cache_matches_individual_inference() {
                 .collect(),
         };
 
-        let combined_response = evaluate(&model, &template, &mut ctx, combined_request, &bool_tokens, "test-model")
+        let combined_response = evaluate(&model, &mut ctx, combined_request, &bool_tokens, "test-model")
             .expect("combined evaluate failed");
 
         // Check each question individually
@@ -176,7 +179,7 @@ fn shared_cache_matches_individual_inference() {
                 questions: BTreeMap::from([((*qname).to_owned(), question.clone())]),
             };
 
-            let single_response = evaluate(&model, &template, &mut ctx, single_request, &bool_tokens, "test-model")
+            let single_response = evaluate(&model, &mut ctx, single_request, &bool_tokens, "test-model")
                 .expect("single evaluate failed");
 
             let _combined_answer = &combined_response.answers[*qname];

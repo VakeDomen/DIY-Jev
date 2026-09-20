@@ -1,6 +1,7 @@
 use std::sync::{
+    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc, Arc,
+    mpsc,
 };
 
 use anyhow::Result;
@@ -64,9 +65,7 @@ impl Drop for ReadyGuard {
 /// The worker thread is named `jev-inference` and runs on a dedicated OS
 /// thread. It initialises the llama.cpp backend, loads the model, builds a
 /// context, then processes jobs from a bounded channel.
-pub fn start(
-    config: Config,
-) -> Result<(WorkerHandle, std::thread::JoinHandle<()>)> {
+pub fn start(config: Config) -> Result<(WorkerHandle, std::thread::JoinHandle<()>)> {
     let worker_ready = Arc::new(AtomicBool::new(false));
     let (jobs_tx, jobs_rx) = mpsc::sync_channel::<Job>(config.max_queue);
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
@@ -76,7 +75,13 @@ pub fn start(
     let worker = std::thread::Builder::new()
         .name("jev-inference".into())
         .spawn(move || {
-            if let Err(error) = run(jobs_rx, &ready_tx, ready_writer.clone(), max_questions, &config) {
+            if let Err(error) = run(
+                jobs_rx,
+                &ready_tx,
+                ready_writer.clone(),
+                max_questions,
+                &config,
+            ) {
                 let _ = ready_tx.send(Err(InferenceError::internal(error.to_string())));
                 tracing::error!(%error, "inference worker stopped");
             }
@@ -103,8 +108,20 @@ fn run(
     max_questions: usize,
     config: &Config,
 ) -> Result<()> {
+    let batch_requests: usize = std::env::var("JEV_REQUEST_BATCH_SIZE")
+        .unwrap_or_else(|_| "5".into())
+        .parse()?;
+    anyhow::ensure!(
+        batch_requests > 0 && batch_requests <= 256,
+        "JEV_REQUEST_BATCH_SIZE must be 1..256"
+    );
+    let wait_ms: u64 = std::env::var("JEV_REQUEST_BATCH_WAIT_MS")
+        .unwrap_or_else(|_| "2".into())
+        .parse()?;
+    anyhow::ensure!(wait_ms <= 1000, "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000");
+    tracing::info!(batch_requests, wait_ms, "request batching configuration");
     let backend = crate::init::init_backend()?;
-    let (model, template) = crate::init::load_model(&backend, config)?;
+    let model = crate::init::load_model(&backend, config)?;
     let mut context = crate::init::build_context(&backend, &model, config)?;
 
     tracing::info!(
@@ -116,7 +133,7 @@ fn run(
 
     // Resolve boolean tokens once at startup so every inference call can
     // skip this work.
-    let bool_tokens = inference::resolve_boolean_tokens(&model, &template)?;
+    let bool_tokens = inference::resolve_boolean_tokens(&model)?;
 
     ready.send(Ok(())).ok();
     // Arm the readiness guard so /ready returns 200. The guard's Drop
@@ -124,19 +141,57 @@ fn run(
     let _guard = ReadyGuard::arm(worker_ready);
 
     while let Ok(job) = jobs.recv() {
-        // Enforce question count cap before any processing.
-        if job.request.questions.len() > max_questions {
-            let _ = job.response.send(Err(InferenceError::validation(format!(
-                "too many questions: {} (max {max_questions})",
-                job.request.questions.len()
-            ))));
-            continue;
+        let mut gathered = vec![job];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+        while gathered.len() < batch_requests {
+            match jobs.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                Ok(job) => gathered.push(job),
+                Err(_) => break,
+            }
         }
-
-        let model_identity = &config.model_identity;
-        let result = inference::evaluate(&model, &template, &mut context, job.request, &bool_tokens, model_identity);
-
-        let _ = job.response.send(result);
+        let mut requests = Vec::new();
+        let mut responders = Vec::new();
+        for job in gathered {
+            if job.response.is_closed() {
+                continue;
+            }
+            // Enforce question count cap before any processing.
+            if job.request.questions.len() > max_questions {
+                let _ = job.response.send(Err(InferenceError::validation(format!(
+                    "too many questions: {} (max {max_questions})",
+                    job.request.questions.len()
+                ))));
+                continue;
+            }
+            requests.push(job.request);
+            responders.push(job.response);
+        }
+        let results = if batch_requests == 1 {
+            requests
+                .into_iter()
+                .map(|request| {
+                    inference::evaluate(
+                        &model,
+                        &mut context,
+                        request,
+                        &bool_tokens,
+                        &config.model_identity,
+                    )
+                })
+                .collect()
+        } else {
+            inference::evaluate_many(
+                &model,
+                &mut context,
+                requests,
+                &bool_tokens,
+                &config.model_identity,
+                config.n_seq_max as usize,
+            )
+        };
+        for (response, result) in responders.into_iter().zip(results) {
+            let _ = response.send(result);
+        }
     }
     Ok(())
 }
