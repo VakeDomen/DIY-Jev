@@ -15,6 +15,11 @@ pub fn init_backend() -> Result<LlamaBackend> {
 }
 
 pub fn load_model(backend: &LlamaBackend, config: &Config) -> Result<LlamaModel> {
+    anyhow::ensure!(
+        std::path::Path::new(&config.model_path).is_file(),
+        "model file does not exist: {}; choose a local GGUF or configure JEV_HF_REPO and JEV_HF_FILENAME",
+        config.model_path
+    );
     tracing::info!(path = %config.model_path, "loading model weights");
     let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
 

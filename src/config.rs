@@ -2,7 +2,7 @@ use std::{net::SocketAddr, num::NonZeroU32};
 
 use anyhow::{Context, Result};
 
-use crate::download::HfDownloadConfig;
+use crate::download::{HfDownloadConfig, select_model_interactively};
 
 /// Validated server configuration.
 #[derive(Debug, Clone)]
@@ -21,6 +21,8 @@ pub struct Config {
     /// Max ms to wait for more requests before processing a partial batch.
     pub request_batch_wait_ms: u64,
     pub hf_download: HfDownloadConfig,
+    /// Whether startup should download `hf_download` before loading the model.
+    pub download_model: bool,
     /// Identity string returned in API responses (e.g. "diy-jev-0.1.0").
     pub model_identity: String,
     /// Valid model aliases accepted in Cloudflare-style requests.
@@ -33,13 +35,17 @@ impl Config {
     /// Load configuration from the environment, returning validated values or
     /// a startup error on invalid input.
     pub fn from_env() -> Result<Self> {
-        let model_path = std::env::var("JEV_MODEL_PATH").unwrap_or_else(|_| {
-            // If the user configured a custom HF filename, derive the local path
-            // from it instead of always defaulting to the built-in fallback.
-            match std::env::var("JEV_HF_FILENAME") {
-                Ok(filename) => format!("./models/{}", filename),
-                Err(_) => "./models/qwen3-4b-instruct-Q4_K_M.gguf".to_owned(),
-            }
+        let explicit_model_path = std::env::var("JEV_MODEL_PATH").ok();
+        let hf_repo = std::env::var("JEV_HF_REPO").ok();
+        let hf_filename = std::env::var("JEV_HF_FILENAME").ok();
+        anyhow::ensure!(
+            hf_repo.is_some() == hf_filename.is_some(),
+            "set both JEV_HF_REPO and JEV_HF_FILENAME, or neither"
+        );
+        let hf_configured = hf_repo.is_some();
+        let model_path = explicit_model_path.unwrap_or_else(|| match &hf_filename {
+            Some(filename) => format!("./models/{filename}"),
+            None => "./models/qwen3-4b-instruct-Q4_K_M.gguf".to_owned(),
         });
 
         let bind_addr: SocketAddr = std::env::var("JEV_BIND_ADDR")
@@ -161,7 +167,7 @@ impl Config {
             _ => None,
         };
 
-        Self::new(
+        let mut config = Self::new(
             model_path,
             bind_addr,
             context_size,
@@ -176,7 +182,29 @@ impl Config {
             model_identity,
             valid_model_aliases,
             system_prompt_text,
-        )
+        )?;
+        config.download_model = hf_configured;
+        Ok(config)
+    }
+
+    /// Select a local model or ask for a Hugging Face GGUF when no model
+    /// source was configured. Explicit environment configuration never prompts.
+    pub fn from_env_or_prompt() -> Result<Self> {
+        let model_path_set = std::env::var_os("JEV_MODEL_PATH").is_some();
+        let hf_repo_set = std::env::var_os("JEV_HF_REPO").is_some();
+        let hf_filename_set = std::env::var_os("JEV_HF_FILENAME").is_some();
+        if model_path_set || hf_repo_set || hf_filename_set {
+            return Self::from_env();
+        }
+
+        let mut config = Self::from_env()?;
+        let selection = select_model_interactively(std::path::Path::new("./models"))?;
+        config.model_path = selection.model_path;
+        if let Some(download) = selection.download {
+            config.hf_download = download;
+            config.download_model = true;
+        }
+        Ok(config)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -229,6 +257,7 @@ impl Config {
             request_batch_size,
             request_batch_wait_ms,
             hf_download,
+            download_model: false,
             model_identity,
             valid_model_aliases,
             system_prompt_text,

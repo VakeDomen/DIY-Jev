@@ -25,9 +25,9 @@ pub fn main() -> Result<()> {
 }
 
 async fn run() -> Result<()> {
-    let config = Config::from_env()?;
+    let config = Config::from_env_or_prompt()?;
 
-    download_model(&config.hf_download).await?;
+    download_model(config.download_model.then_some(&config.hf_download)).await?;
     let (handle, inference_thread) = diy_jev::worker::start(config.clone())?;
     let state = AppState {
         worker: handle,

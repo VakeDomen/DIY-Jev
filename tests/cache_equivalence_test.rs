@@ -45,6 +45,7 @@ fn shared_cache_matches_individual_inference() {
         request_batch_size: 1,
         request_batch_wait_ms: 2,
         hf_download: diy_jev::download::HfDownloadConfig::default_fallback(),
+        download_model: false,
         model_identity: "test-model".into(),
         valid_model_aliases: vec!["test-model".into()],
         system_prompt_text: None,
