@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use llama_cpp_2::{
     LogOptions,
     context::{LlamaContext, params::LlamaContextParams},
@@ -18,12 +18,32 @@ pub fn load_model(
     backend: &LlamaBackend,
     config: &Config,
 ) -> Result<(LlamaModel, LlamaChatTemplate)> {
-    tracing::info!("loading model weights");
+    tracing::info!(path = %config.model_path, "loading model weights");
     let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
 
-    let model = LlamaModel::load_from_file(backend, &config.model_path, &model_params)?;
+    let model = LlamaModel::load_from_file(backend, &config.model_path, &model_params)
+        .with_context(|| format!("failed to load model from {}", config.model_path))?;
 
     let template = model.chat_template(None)?;
+
+    // Log model metadata
+    let n_vocab = model.n_vocab();
+    let n_ctx_train = model.n_ctx_train();
+    let general_name = model.meta_val_str("general.name").ok();
+    let general_arch = model.meta_val_str("general.architecture").ok();
+    let n_params = model.n_params();
+    let file_size = model.size();
+    tracing::info!(
+        name = general_name.as_deref().unwrap_or("unknown"),
+        arch = general_arch.as_deref().unwrap_or("unknown"),
+        n_vocab,
+        n_ctx_train,
+        n_params,
+        file_size,
+        file = %config.model_path,
+        "model loaded successfully"
+    );
+
     Ok((model, template))
 }
 

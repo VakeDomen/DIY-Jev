@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use granite_jev::inference::evaluate;
-use granite_jev::inference::resolve_boolean_tokens;
-use granite_jev::init::{build_context, init_backend, load_model};
-use granite_jev::config::Config;
-use granite_jev::api::{EvaluateRequest, Question};
+use diy_jev::inference::evaluate;
+use diy_jev::inference::resolve_boolean_tokens;
+use diy_jev::init::{build_context, init_backend, load_model};
+use diy_jev::config::Config;
+use diy_jev::api::{EvaluateRequest, Question};
 use serde_json::Value;
 
 /// Inference equivalence test (multi-question vs. single-question).
@@ -166,7 +166,7 @@ fn shared_cache_matches_individual_inference() {
                 .collect(),
         };
 
-        let combined_response = evaluate(&model, &template, &mut ctx, combined_request, &bool_tokens)
+        let combined_response = evaluate(&model, &template, &mut ctx, combined_request, &bool_tokens, "test-model")
             .expect("combined evaluate failed");
 
         // Check each question individually
@@ -176,21 +176,21 @@ fn shared_cache_matches_individual_inference() {
                 questions: BTreeMap::from([((*qname).to_owned(), question.clone())]),
             };
 
-            let single_response = evaluate(&model, &template, &mut ctx, single_request, &bool_tokens)
+            let single_response = evaluate(&model, &template, &mut ctx, single_request, &bool_tokens, "test-model")
                 .expect("single evaluate failed");
 
             let _combined_answer = &combined_response.answers[*qname];
             let _single_answer = &single_response.answers[*qname];
 
             let combined_probs = match &combined_response.answers[*qname] {
-                granite_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
-                granite_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
-                granite_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
+                diy_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
             };
             let single_probs = match &single_response.answers[*qname] {
-                granite_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
-                granite_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
-                granite_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
+                diy_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
             };
 
             let max_diff = combined_probs

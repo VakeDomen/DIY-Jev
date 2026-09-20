@@ -107,6 +107,13 @@ fn run(
     let (model, template) = crate::init::load_model(&backend, config)?;
     let mut context = crate::init::build_context(&backend, &model, config)?;
 
+    tracing::info!(
+        context_size = context.n_ctx(),
+        batch_size = config.batch_size,
+        n_seq_max = config.n_seq_max,
+        "llama context created"
+    );
+
     // Resolve boolean tokens once at startup so every inference call can
     // skip this work.
     let bool_tokens = inference::resolve_boolean_tokens(&model, &template)?;
@@ -126,7 +133,8 @@ fn run(
             continue;
         }
 
-        let result = inference::evaluate(&model, &template, &mut context, job.request, &bool_tokens);
+        let model_identity = &config.model_identity;
+        let result = inference::evaluate(&model, &template, &mut context, job.request, &bool_tokens, model_identity);
 
         let _ = job.response.send(result);
     }

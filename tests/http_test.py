@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """HTTP integration test: validates Axum error responses match the OpenAPI spec.
 
-Starts the Granite Jev server (or connects to an existing one), sends requests
+Starts the DIY Jev server (or connects to an existing one), sends requests
 that trigger each error status code, and verifies the JSON error envelope
 matches the expected schema.
 
@@ -189,7 +189,7 @@ def main() -> int:
     parser.add_argument("--start-server", action="store_true",
                         help="Start the server binary before testing")
     parser.add_argument("--server-bin", type=Path,
-                        default=REPO_ROOT / "target/release/granite-jev")
+                        default=REPO_ROOT / "target/release/diy-jev")
     args = parser.parse_args()
 
     url = args.server_url.rstrip("/")

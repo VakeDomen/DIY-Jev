@@ -618,6 +618,7 @@ pub fn evaluate(
     ctx: &mut LlamaContext<'_>,
     request: EvaluateRequest,
     bool_tokens: &BooleanTokens,
+    model_identity: &str,
 ) -> Result<EvaluateResponse, InferenceError> {
     if request.questions.is_empty() {
         return Err(InferenceError::validation("questions must not be empty"));
@@ -672,7 +673,7 @@ pub fn evaluate(
     }
 
     Ok(EvaluateResponse {
-        model: "granite-jev-0.1.0".into(),
+        model: model_identity.to_owned(),
         answers,
         usage: Usage {
             input_tokens: total_input,

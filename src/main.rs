@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 
-use granite_jev::config::Config;
-use granite_jev::download::download_model;
-use granite_jev::http::{AppState, router};
+use diy_jev::config::Config;
+use diy_jev::download::download_model;
+use diy_jev::http::{AppState, router};
 
 /// Entry point. Sets up the environment outside the tokio runtime, then
 /// delegates to the async runtime for server startup.
@@ -10,7 +10,7 @@ pub fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "granite_jev=info".into()),
+                .unwrap_or_else(|_| "diy_jev=info".into()),
         )
         .with_target(false)
         .init();
@@ -27,8 +27,8 @@ pub fn main() -> Result<()> {
 async fn run() -> Result<()> {
     let config = Config::from_env()?;
 
-    download_model().await?;
-    let (handle, inference_thread) = granite_jev::worker::start(config.clone())?;
+    download_model(&config.hf_download).await?;
+    let (handle, inference_thread) = diy_jev::worker::start(config.clone())?;
     let state = AppState {
         worker: handle,
         model_identity: config.model_identity(),

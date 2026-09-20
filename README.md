@@ -1,11 +1,14 @@
-# Granite Jev server
+# DIY Jev server
 
-A Jev-compatible constrained-classification HTTP server backed by
-`granite-4.2-3b` and llama.cpp. The model is loaded once at startup and all
-requests are sent to a resident inference worker. Each question within a request
-is evaluated independently (the previous shared-prefix KV-cache optimisation was
-removed because it did not produce equivalent results on the Granite
-architecture).
+A Jev-compatible constrained-classification HTTP server backed by llama.cpp.
+The model is loaded once at startup and all requests are sent to a resident
+inference worker. Each question within a request is evaluated independently
+(the previous shared-prefix KV-cache optimisation was removed because it did
+not produce equivalent results on some architectures).
+
+Any GGUF model can be used — set `JEV_HF_REPO` and `JEV_HF_FILENAME` to
+auto-download from Hugging Face, or point `JEV_MODEL_PATH` at an existing
+GGUF file. The default is Granite 4.2 3B.
 
 This reproduces Jev's public request and response shapes; it is not TypeSafe's
 proprietary model or calibration method. Probabilities are a softmax over only
@@ -22,6 +25,10 @@ On first start the default GGUF is downloaded to `models/`. Configuration:
 
 - `JEV_BIND_ADDR` — listener address, default `127.0.0.1:8080`
 - `JEV_MODEL_PATH` — use an existing GGUF instead of downloading the default
+- `JEV_HF_REPO` — Hugging Face repo (e.g. `unsloth/Qwen3.6-35B-A3B-GGUF`)
+- `JEV_HF_FILENAME` — GGUF filename in that repo
+- `JEV_MODEL_IDENTITY` — model string returned in API responses, default `diy-jev-0.1.0`
+- `JEV_MODEL_ALIASES` — comma-separated accepted model aliases
 - `JEV_CONTEXT_SIZE` — llama.cpp context size, default `32768`
 - `RUST_LOG` — log filter
 
@@ -79,10 +86,11 @@ The Cloudflare wrapper accepts an optional `model` field. Currently supported
 aliases:
 
 - `typesafe/jev`, `@cf/typesafe/jev`
-- `granite-jev`, `granite-jev-0.1.0`
 
-An unrecognised model name returns HTTP 422. The response `model` field always
-reflects the actually loaded backend (`granite-jev-0.1.0`).
+Additional aliases can be configured via `JEV_MODEL_ALIASES`. An unrecognised
+model name returns HTTP 422. The response `model` field always reflects the
+actually loaded backend (default `diy-jev-0.1.0`, overridable via
+`JEV_MODEL_IDENTITY`).
 
 ### Confidence and usage accounting
 
@@ -114,7 +122,7 @@ Smoke-test a running server:
 
 ```sh
 python3 benchmarks/benchmark.py server benchmarks/sample.jsonl \
-  --output benchmark-results/granite.json
+  --output benchmark-results/results.json
 ```
 
 On first use, the script automatically installs `datasets`, `python-chess`, and
@@ -130,10 +138,25 @@ python3 benchmarks/benchmark.py server \
   --warmup 5
 ```
 
-The default concurrency is 10, the result is saved to
-`benchmarks/results/granite.json`, and the radar is rendered to
-`benchmarks/results/radar.png`. Override the request settings with
-`--concurrency` or `--output`.
+The default concurrency is 10. Results and the radar are saved to
+`benchmarks/results_<model name>/results.json` and `radar.png`. The model name
+comes from the server response; use `--model-name qwen3_4b` to override it.
+Names are sanitized for filesystem paths. A custom `--output` takes precedence,
+and the radar is saved beside that JSON file.
+
+Analyze all saved model runs and generate charts:
+
+```sh
+python3 benchmarks/analyze.py
+```
+
+This discovers `benchmarks/results_*/*.json` and writes task accuracy and
+published-baseline comparison heatmaps, calibration curves, confidence
+distributions, latency CDFs and a throughput/accuracy plot into
+`benchmarks/charts/`. That directory also contains a summary `README.md` and
+`task_metrics.csv`. Supply explicit JSON paths to analyze selected runs.
+The report checks dataset-selection fingerprints; speed comparisons reflect
+the recorded hardware and concurrency, which may differ between runs.
 
 During the run, a dependency-free progress bar on stderr shows completed
 requests, throughput, and estimated remaining time.
@@ -158,14 +181,14 @@ OpenJev's published NLI-4B numbers and stores the same comparison in the JSON:
 
 ```sh
 python3 benchmarks/benchmark.py server benchmarks/data/radar-pilot.jsonl \
-  --warmup 5 --output benchmark-results/granite.json
+  --warmup 5 --output benchmark-results/results.json
 
 python3 benchmarks/benchmark.py compare \
-  benchmark-results/granite.json
+  benchmark-results/results.json
 
 python3 benchmarks/benchmark.py radar \
-  benchmark-results/granite.json \
-  --label "Granite Jev server" \
+  benchmark-results/results.json \
+  --label "DIY Jev server" \
   --output benchmark-results/radar.png
 ```
 

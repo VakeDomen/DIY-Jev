@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark a Granite Jev server against OpenJev's published MC results.
+"""Benchmark a DIY Jev server against OpenJev's published MC results.
 
 The input is JSONL. Each row must contain:
 
@@ -38,7 +38,7 @@ BENCHMARK_DATA_DIR = Path(__file__).resolve().parent / "data"
 BENCHMARK_RESULTS_DIR = Path(__file__).resolve().parent / "results"
 LOCAL_DEPS_DIR = Path(__file__).resolve().parent / ".deps"
 DEFAULT_DATA_PATH = BENCHMARK_DATA_DIR / "radar-full.jsonl"
-DEFAULT_RESULT_PATH = BENCHMARK_RESULTS_DIR / "granite.json"
+DEFAULT_RESULT_PATH = BENCHMARK_RESULTS_DIR / "results.json"
 DEFAULT_RADAR_PATH = BENCHMARK_RESULTS_DIR / "radar.png"
 PUBLISHED_RESULT_SOURCES = (
     "https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json",
@@ -168,10 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    server = sub.add_parser("server", help="benchmark a running Granite Jev server")
+    server = sub.add_parser("server", help="benchmark a running DIY Jev server")
     add_run_arguments(server)
     server.add_argument("--url", default="http://127.0.0.1:8080/v1/evaluate")
     server.add_argument("--timeout", type=float, default=120.0)
+    server.add_argument("--model-name", help="model name for results_<name>; defaults to response model")
     server.add_argument(
         "--concurrency",
         type=positive_int,
@@ -205,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     radar = sub.add_parser("radar", help="plot per-task accuracy from result files")
     radar.add_argument("results", nargs="+", type=Path)
     radar.add_argument("--output", type=Path, default=Path("benchmark-results/radar.png"))
-    radar.add_argument("--title", default="Granite Jev vs. OpenJev")
+    radar.add_argument("--title", default="DIY Jev vs. OpenJev")
     radar.add_argument(
         "--label",
         action="append",
@@ -225,8 +226,8 @@ def add_run_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=DEFAULT_RESULT_PATH,
-        help=f"result JSON path (default: {DEFAULT_RESULT_PATH})",
+        default=None,
+        help="result JSON path (default: benchmarks/results_<model name>/results.json)",
     )
     parser.add_argument("--limit", type=positive_int)
     parser.add_argument("--seed", type=int, default=0)
@@ -314,6 +315,7 @@ class ServerBackend:
         self.timeout = timeout
         self.instruction = instruction
         self.state_format = state_format
+        self.model_name = "unknown"
 
     def predict(self, example: Example) -> Prediction:
         keys = [f"option_{index}" for index in range(len(example.options))]
@@ -346,6 +348,8 @@ class ServerBackend:
         latency_ms = (time.perf_counter() - started) * 1000
         try:
             result = payload.get("result", payload)
+            if isinstance(result.get("model"), str) and result["model"].strip():
+                self.model_name = result["model"]
             answer = result["answers"]["answer"]
             probabilities = [float(answer["probabilities"][key]) for key in keys]
             predicted = keys.index(answer["choice"])
@@ -1094,7 +1098,7 @@ def main() -> int:
             examples,
             backend.predict,
             {
-                "name": "granite-jev-server",
+                "name": "diy-jev-server",
                 "url": args.url,
                 "instruction": args.instruction,
                 "state_format": args.state_format,
@@ -1108,6 +1112,11 @@ def main() -> int:
             "sha256": file_sha256(args.data),
             "selection_sha256": examples_sha256(examples),
         }
+        model_name = args.model_name or backend.model_name
+        result["backend"]["model"] = model_name
+        slug = re.sub(r"[^a-zA-Z0-9_.-]+", "_", model_name).strip("._-") or "unknown"
+        if args.output is None:
+            args.output = Path(__file__).resolve().parent / f"results_{slug}" / "results.json"
         result["published_comparison"] = published_comparison(result)
         result["published_reference"] = {
             "name": "AlexWortega/openjev qwen3.5-4b-nli",
@@ -1118,9 +1127,9 @@ def main() -> int:
         if all(task in result.get("tasks", {}) for task in RADAR_TASKS):
             plot_radar(
                 [args.output],
-                DEFAULT_RADAR_PATH,
-                "Granite Jev vs. published OpenJev",
-                ["Granite Jev server"],
+                args.output.parent / "radar.png",
+                "DIY Jev vs. published OpenJev",
+                [model_name],
             )
         else:
             print("radar skipped: fixture does not contain all nine radar tasks")

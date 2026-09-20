@@ -2,9 +2,28 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 
-use granite_jev::api::*;
-use granite_jev::config::Config;
+use diy_jev::api::*;
+use diy_jev::config::Config;
+use diy_jev::download::HfDownloadConfig;
 use serde_json::Value;
+
+fn default_hf_config() -> HfDownloadConfig {
+    HfDownloadConfig {
+        repo: "ibm-granite/granite-4.2-3b-GGUF".into(),
+        filename: "granite-4.2-3b-Q4_K_M.gguf".into(),
+    }
+}
+
+fn default_model_identity() -> String {
+    "diy-jev-0.1.0".into()
+}
+
+fn default_model_aliases() -> Vec<String> {
+    vec![
+        "typesafe/jev".into(),
+        "@cf/typesafe/jev".into(),
+    ]
+}
 
 /// Verify that Config::new rejects zero values for batch_size, max_queue,
 /// and max_questions. This uses direct constructor calls (no environment
@@ -15,13 +34,13 @@ fn config_rejects_zero_values() {
     let ctx = NonZeroU32::new(4096).unwrap();
 
     // Zero batch_size
-    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100, 16).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero max_queue
-    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100, 16).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero max_questions
-    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0, 16).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero n_seq_max
-    assert!(Config::new("model".into(), addr, ctx, 512, 64, 100, 0).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 100, 0, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
 }
 
 /// Verify that Config::new accepts positive values.
@@ -30,12 +49,14 @@ fn config_accepts_positive_values() {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let ctx = NonZeroU32::new(4096).unwrap();
 
-    let config = Config::new("model".into(), addr, ctx, 512, 32, 50, 16)
+    let config = Config::new("model".into(), addr, ctx, 512, 32, 50, 16, default_hf_config(), default_model_identity(), default_model_aliases())
         .expect("positive config values should be accepted");
     assert_eq!(config.batch_size, 512);
     assert_eq!(config.max_queue, 32);
     assert_eq!(config.max_questions, 50);
     assert_eq!(config.n_seq_max, 16);
+    assert_eq!(config.model_identity, "diy-jev-0.1.0");
+    assert_eq!(config.valid_model_aliases.len(), 2);
 }
 
 /// Verify that the full request → response serialization round-trips
@@ -89,7 +110,7 @@ fn request_response_round_trip() {
 
     // Simulate a response
     let response = EvaluateResponse {
-        model: "granite-jev-0.1.0".into(),
+        model: "diy-jev-0.1.0".into(),
         answers: BTreeMap::from([
             (
                 "department".into(),
@@ -134,7 +155,7 @@ fn request_response_round_trip() {
     // Serialize and deserialize the response
     let response_json = serde_json::to_value(&response).unwrap();
     // Verify the JSON shape matches expectations
-    assert_eq!(response_json["model"], "granite-jev-0.1.0");
+    assert_eq!(response_json["model"], "diy-jev-0.1.0");
     assert!(response_json["answers"].is_object());
     assert_eq!(response_json["answers"]["refund"]["type"], "noul");
     assert!((response_json["answers"]["refund"]["noul"].as_f64().unwrap() - 0.92).abs() < 1e-6);

@@ -551,6 +551,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "diy-jev"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "encoding_rs",
+ "hf-hub",
+ "llama-cpp-2",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -813,22 +829,6 @@ dependencies = [
  "log",
  "regex-automata",
  "regex-syntax",
-]
-
-[[package]]
-name = "granite-jev"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "encoding_rs",
- "hf-hub",
- "llama-cpp-2",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

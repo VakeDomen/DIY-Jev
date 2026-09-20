@@ -2,6 +2,8 @@ use std::{net::SocketAddr, num::NonZeroU32};
 
 use anyhow::{Context, Result};
 
+use crate::download::HfDownloadConfig;
+
 /// Validated server configuration.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -12,14 +14,25 @@ pub struct Config {
     pub max_queue: usize,
     pub max_questions: usize,
     pub n_seq_max: u32,
+    pub hf_download: HfDownloadConfig,
+    /// Identity string returned in API responses (e.g. "diy-jev-0.1.0").
+    pub model_identity: String,
+    /// Valid model aliases accepted in Cloudflare-style requests.
+    pub valid_model_aliases: Vec<String>,
 }
 
 impl Config {
     /// Load configuration from the environment, returning validated values or
     /// a startup error on invalid input.
     pub fn from_env() -> Result<Self> {
-        let model_path = std::env::var("JEV_MODEL_PATH")
-            .unwrap_or_else(|_| "./models/granite-4.2-3b-Q4_K_M.gguf".to_owned());
+        let model_path = std::env::var("JEV_MODEL_PATH").unwrap_or_else(|_| {
+            // If the user configured a custom HF filename, derive the local path
+            // from it instead of always defaulting to the built-in fallback.
+            match std::env::var("JEV_HF_FILENAME") {
+                Ok(filename) => format!("./models/{}", filename),
+                Err(_) => "./models/granite-4.2-3b-Q4_K_M.gguf".to_owned(),
+            }
+        });
 
         let bind_addr: SocketAddr = std::env::var("JEV_BIND_ADDR")
             .unwrap_or_else(|_| "127.0.0.1:8080".into())
@@ -90,7 +103,20 @@ impl Config {
             Err(_) => 16,
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max)
+        let hf_download = HfDownloadConfig::from_env();
+
+        let model_identity = std::env::var("JEV_MODEL_IDENTITY")
+            .unwrap_or_else(|_| "diy-jev-0.1.0".into());
+
+        let valid_model_aliases = match std::env::var("JEV_MODEL_ALIASES") {
+            Ok(val) => val.split(',').map(|s| s.trim().to_string()).collect(),
+            Err(_) => vec![
+                "typesafe/jev".into(),
+                "@cf/typesafe/jev".into(),
+            ],
+        };
+
+        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, hf_download, model_identity, valid_model_aliases)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -104,6 +130,9 @@ impl Config {
         max_queue: usize,
         max_questions: usize,
         n_seq_max: u32,
+        hf_download: HfDownloadConfig,
+        model_identity: String,
+        valid_model_aliases: Vec<String>,
     ) -> Result<Self> {
         if batch_size == 0 {
             anyhow::bail!("batch_size must be positive, got 0");
@@ -125,21 +154,22 @@ impl Config {
             max_queue,
             max_questions,
             n_seq_max,
+            hf_download,
+            model_identity,
+            valid_model_aliases,
         })
     }
 
     /// Return the model identity string reported in API responses.
     pub fn model_identity(&self) -> String {
-        "granite-jev-0.1.0".into()
+        self.model_identity.clone()
     }
 
     /// Return the list of valid model aliases accepted in the request body.
     pub fn valid_model_aliases(&self) -> Vec<&str> {
-        vec![
-            "typesafe/jev",
-            "@cf/typesafe/jev",
-            "granite-jev",
-            "granite-jev-0.1.0",
-        ]
+        // Return borrowed str slices; the owned Vec stored on self is the
+        // canonical set, but callers expect `&[&str]`.  Cloning into a
+        // temporary Vec of &str is okay because it is called once at startup.
+        self.valid_model_aliases.iter().map(String::as_str).collect()
     }
 }

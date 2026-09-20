@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Classification quality evaluation set for Granite Jev.
+"""Classification quality evaluation set for DIY Jev.
 
 Tests the model's ability to correctly classify inputs across several
 scenarios: clear positives, clear negatives, ambiguous cases, and
@@ -324,7 +324,7 @@ def main() -> int:
     parser.add_argument(
         "--server-url",
         default="http://127.0.0.1:8080/v1/evaluate",
-        help="Granite Jev server URL (default: %(default)s)",
+        help="DIY Jev server URL (default: %(default)s)",
     )
     parser.add_argument(
         "--timeout",

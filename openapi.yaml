@@ -1,10 +1,10 @@
 openapi: 3.1.0
 info:
-  title: Granite Jev-compatible API
+  title: DIY Jev-compatible API
   version: 0.1.0
   description: |
-    A local Jev-compatible structured evaluation API backed by Granite and
-    llama.cpp. Questions are evaluated independently against the shared state.
+    A local Jev-compatible structured evaluation API backed by llama.cpp.
+    Questions are evaluated independently against the shared state.
     Probabilities are constrained softmax scores over the legal answer labels;
     they are not TypeSafe's proprietary calibrated probabilities.
 servers:
@@ -293,7 +293,7 @@ components:
       properties:
         model:
           type: string
-          example: granite-jev-0.1.0
+          example: diy-jev-0.1.0
         answers:
           type: object
           additionalProperties:

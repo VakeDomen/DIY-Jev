@@ -1,4 +1,4 @@
-//! Granite Jev — a local Jev-compatible structured evaluation API.
+//! DIY Jev — a local Jev-compatible structured evaluation API.
 //!
 //! This crate's modules are re-exported here so integration tests, benchmarks,
 //! and client libraries can import the public API without depending on the

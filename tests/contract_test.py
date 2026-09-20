@@ -249,7 +249,7 @@ def test_response_validation() -> int:
         (
             "Choice answer",
             {
-                "model": "granite-jev-0.1.0",
+                "model": "diy-jev-0.1.0",
                 "answers": {
                     "department": {
                         "type": "choice",
@@ -268,7 +268,7 @@ def test_response_validation() -> int:
         (
             "Noul answer",
             {
-                "model": "granite-jev-0.1.0",
+                "model": "diy-jev-0.1.0",
                 "answers": {
                     "refund": {"type": "noul", "noul": 0.92},
                 },
@@ -278,7 +278,7 @@ def test_response_validation() -> int:
         (
             "Score answer",
             {
-                "model": "granite-jev-0.1.0",
+                "model": "diy-jev-0.1.0",
                 "answers": {
                     "severity": {
                         "type": "score",
@@ -294,7 +294,7 @@ def test_response_validation() -> int:
         (
             "Response with extra unknown fields",
             {
-                "model": "granite-jev-0.1.0",
+                "model": "diy-jev-0.1.0",
                 "answers": {
                     "q1": {"type": "noul", "noul": 0.5},
                 },
