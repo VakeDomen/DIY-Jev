@@ -108,17 +108,8 @@ fn run(
     max_questions: usize,
     config: &Config,
 ) -> Result<()> {
-    let batch_requests: usize = std::env::var("JEV_REQUEST_BATCH_SIZE")
-        .unwrap_or_else(|_| "5".into())
-        .parse()?;
-    anyhow::ensure!(
-        batch_requests > 0 && batch_requests <= 256,
-        "JEV_REQUEST_BATCH_SIZE must be 1..256"
-    );
-    let wait_ms: u64 = std::env::var("JEV_REQUEST_BATCH_WAIT_MS")
-        .unwrap_or_else(|_| "2".into())
-        .parse()?;
-    anyhow::ensure!(wait_ms <= 1000, "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000");
+    let batch_requests = config.request_batch_size;
+    let wait_ms = config.request_batch_wait_ms;
     tracing::info!(batch_requests, wait_ms, "request batching configuration");
     let backend = crate::init::init_backend()?;
     let model = crate::init::load_model(&backend, config)?;

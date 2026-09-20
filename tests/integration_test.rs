@@ -34,13 +34,13 @@ fn config_rejects_zero_values() {
     let ctx = NonZeroU32::new(4096).unwrap();
 
     // Zero batch_size
-    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 0, 64, 100, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero max_queue
-    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 0, 100, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero max_questions
-    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0, 16, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 0, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
     // Zero n_seq_max
-    assert!(Config::new("model".into(), addr, ctx, 512, 64, 100, 0, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
+    assert!(Config::new("model".into(), addr, ctx, 512, 64, 100, 0, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases()).is_err());
 }
 
 /// Verify that Config::new accepts positive values.
@@ -49,12 +49,14 @@ fn config_accepts_positive_values() {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let ctx = NonZeroU32::new(4096).unwrap();
 
-    let config = Config::new("model".into(), addr, ctx, 512, 32, 50, 16, default_hf_config(), default_model_identity(), default_model_aliases())
+    let config = Config::new("model".into(), addr, ctx, 512, 32, 50, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases())
         .expect("positive config values should be accepted");
     assert_eq!(config.batch_size, 512);
     assert_eq!(config.max_queue, 32);
     assert_eq!(config.max_questions, 50);
     assert_eq!(config.n_seq_max, 16);
+    assert_eq!(config.request_batch_size, 5);
+    assert_eq!(config.request_batch_wait_ms, 2);
     assert_eq!(config.model_identity, "diy-jev-0.1.0");
     assert_eq!(config.valid_model_aliases.len(), 2);
 }

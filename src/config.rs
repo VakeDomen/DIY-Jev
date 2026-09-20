@@ -14,6 +14,10 @@ pub struct Config {
     pub max_queue: usize,
     pub max_questions: usize,
     pub n_seq_max: u32,
+    /// Number of requests to batch together before inference (1 = no batching).
+    pub request_batch_size: usize,
+    /// Max ms to wait for more requests before processing a partial batch.
+    pub request_batch_wait_ms: u64,
     pub hf_download: HfDownloadConfig,
     /// Identity string returned in API responses (e.g. "diy-jev-0.1.0").
     pub model_identity: String,
@@ -103,6 +107,34 @@ impl Config {
             Err(_) => 16,
         };
 
+        let request_batch_size = match std::env::var("JEV_REQUEST_BATCH_SIZE") {
+            Ok(value) => {
+                let parsed: usize = value.parse().with_context(|| {
+                    format!("invalid JEV_REQUEST_BATCH_SIZE: {value:?} is not a valid usize")
+                })?;
+                anyhow::ensure!(
+                    parsed > 0 && parsed <= 256,
+                    "JEV_REQUEST_BATCH_SIZE must be 1..256"
+                );
+                parsed
+            }
+            Err(_) => 5,
+        };
+
+        let request_batch_wait_ms = match std::env::var("JEV_REQUEST_BATCH_WAIT_MS") {
+            Ok(value) => {
+                let parsed: u64 = value.parse().with_context(|| {
+                    format!("invalid JEV_REQUEST_BATCH_WAIT_MS: {value:?} is not a valid u64")
+                })?;
+                anyhow::ensure!(
+                    parsed <= 1000,
+                    "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000"
+                );
+                parsed
+            }
+            Err(_) => 2,
+        };
+
         let hf_download = HfDownloadConfig::from_env();
 
         let model_identity = std::env::var("JEV_MODEL_IDENTITY")
@@ -116,7 +148,7 @@ impl Config {
             ],
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, hf_download, model_identity, valid_model_aliases)
+        Self::new(model_path, bind_addr, context_size, batch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases)
     }
 
     /// Create a new config, validating numeric constraints.
@@ -130,6 +162,8 @@ impl Config {
         max_queue: usize,
         max_questions: usize,
         n_seq_max: u32,
+        request_batch_size: usize,
+        request_batch_wait_ms: u64,
         hf_download: HfDownloadConfig,
         model_identity: String,
         valid_model_aliases: Vec<String>,
@@ -146,6 +180,12 @@ impl Config {
         if n_seq_max == 0 {
             anyhow::bail!("n_seq_max must be positive, got 0");
         }
+        if request_batch_size == 0 || request_batch_size > 256 {
+            anyhow::bail!("request_batch_size must be 1..256, got {request_batch_size}");
+        }
+        if request_batch_wait_ms > 1000 {
+            anyhow::bail!("request_batch_wait_ms must be <= 1000, got {request_batch_wait_ms}");
+        }
         Ok(Self {
             model_path,
             bind_addr,
@@ -154,6 +194,8 @@ impl Config {
             max_queue,
             max_questions,
             n_seq_max,
+            request_batch_size,
+            request_batch_wait_ms,
             hf_download,
             model_identity,
             valid_model_aliases,

@@ -40,6 +40,8 @@ fn shared_cache_matches_individual_inference() {
         max_queue: 64,
         max_questions: 100,
         n_seq_max: 16,
+        request_batch_size: 1,
+        request_batch_wait_ms: 2,
         hf_download: diy_jev::download::HfDownloadConfig::default_fallback(),
         model_identity: "test-model".into(),
         valid_model_aliases: vec!["test-model".into()],
