@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
+use diy_jev::api::{EvaluateRequest, Question};
+use diy_jev::config::Config;
 use diy_jev::inference::evaluate;
 use diy_jev::inference::resolve_boolean_tokens;
 use diy_jev::init::{build_context, init_backend, load_model};
-use diy_jev::config::Config;
-use diy_jev::api::{EvaluateRequest, Question};
 use diy_jev::prompts::SystemPrompt;
 use serde_json::Value;
 
@@ -55,8 +55,8 @@ fn shared_cache_matches_individual_inference() {
     let mut ctx = build_context(&backend, &model, &config).expect("failed to build context");
 
     let system = SystemPrompt::new(&model, None, None).expect("failed to build system prompt");
-    let bool_tokens = resolve_boolean_tokens(&model, &system)
-        .expect("failed to resolve boolean tokens");
+    let bool_tokens =
+        resolve_boolean_tokens(&model, &system).expect("failed to resolve boolean tokens");
 
     // ── Test scenarios ──────────────────────────────────────────────────
 
@@ -160,7 +160,7 @@ fn shared_cache_matches_individual_inference() {
     ];
 
     let tolerance = 0.001; // Each question is decoded independently, so results
-                           // must match to within floating-point precision.
+    // must match to within floating-point precision.
 
     for scenario in &scenarios {
         eprintln!("\n═══ Scenario: {} ═══", scenario.name);
@@ -175,8 +175,15 @@ fn shared_cache_matches_individual_inference() {
                 .collect(),
         };
 
-        let combined_response = evaluate(&model, &mut ctx, &system, combined_request, &bool_tokens, "test-model")
-            .expect("combined evaluate failed");
+        let combined_response = evaluate(
+            &model,
+            &mut ctx,
+            &system,
+            combined_request,
+            &bool_tokens,
+            "test-model",
+        )
+        .expect("combined evaluate failed");
 
         // Check each question individually
         for (qname, question) in &scenario.questions {
@@ -185,21 +192,36 @@ fn shared_cache_matches_individual_inference() {
                 questions: BTreeMap::from([((*qname).to_owned(), question.clone())]),
             };
 
-            let single_response = evaluate(&model, &mut ctx, &system, single_request, &bool_tokens, "test-model")
-                .expect("single evaluate failed");
+            let single_response = evaluate(
+                &model,
+                &mut ctx,
+                &system,
+                single_request,
+                &bool_tokens,
+                "test-model",
+            )
+            .expect("single evaluate failed");
 
             let _combined_answer = &combined_response.answers[*qname];
             let _single_answer = &single_response.answers[*qname];
 
             let combined_probs = match &combined_response.answers[*qname] {
                 diy_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
-                diy_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
-                diy_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Choice { probabilities, .. } => {
+                    probabilities.values().copied().collect()
+                }
+                diy_jev::api::Answer::Score { probabilities, .. } => {
+                    probabilities.values().copied().collect()
+                }
             };
             let single_probs = match &single_response.answers[*qname] {
                 diy_jev::api::Answer::Noul { noul } => vec![*noul, 1.0 - *noul],
-                diy_jev::api::Answer::Choice { probabilities, .. } => probabilities.values().copied().collect(),
-                diy_jev::api::Answer::Score { probabilities, .. } => probabilities.values().copied().collect(),
+                diy_jev::api::Answer::Choice { probabilities, .. } => {
+                    probabilities.values().copied().collect()
+                }
+                diy_jev::api::Answer::Score { probabilities, .. } => {
+                    probabilities.values().copied().collect()
+                }
             };
 
             let max_diff = combined_probs

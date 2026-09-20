@@ -125,7 +125,8 @@ fn run(
     );
 
     // Tokenize both system prompts once at startup.
-    let system = SystemPrompt::new(&model, None, None)?;
+    let custom_prompt = config.system_prompt_text.as_deref();
+    let system = SystemPrompt::new(&model, custom_prompt, custom_prompt)?;
     tracing::info!(
         choice_len = system.choice_tokens.len(),
         noul_len = system.noul_tokens.len(),

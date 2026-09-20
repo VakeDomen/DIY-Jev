@@ -104,10 +104,10 @@ impl Question {
         if option_count > 255 {
             return Err("a question may have at most 255 criteria".into());
         }
-        if let Question::Score { criteria, .. } = self {
-            if criteria.len() > 10 {
-                return Err("a score question may have at most 10 criteria".into());
-            }
+        if let Question::Score { criteria, .. } = self
+            && criteria.len() > 10
+        {
+            return Err("a score question may have at most 10 criteria".into());
         }
         Ok(())
     }

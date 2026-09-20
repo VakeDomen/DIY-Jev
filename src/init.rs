@@ -14,16 +14,12 @@ pub fn init_backend() -> Result<LlamaBackend> {
     Ok(LlamaBackend::init()?)
 }
 
-pub fn load_model(
-    backend: &LlamaBackend,
-    config: &Config,
-) -> Result<LlamaModel> {
+pub fn load_model(backend: &LlamaBackend, config: &Config) -> Result<LlamaModel> {
     tracing::info!(path = %config.model_path, "loading model weights");
     let model_params = LlamaModelParams::default().with_n_gpu_layers(999);
 
     let model = LlamaModel::load_from_file(backend, &config.model_path, &model_params)
         .with_context(|| format!("failed to load model from {}", config.model_path))?;
-
 
     // Log model metadata
     let n_vocab = model.n_vocab();

@@ -32,7 +32,11 @@ async fn run() -> Result<()> {
     let state = AppState {
         worker: handle,
         model_identity: config.model_identity(),
-        valid_model_aliases: config.valid_model_aliases().into_iter().map(String::from).collect(),
+        valid_model_aliases: config
+            .valid_model_aliases()
+            .into_iter()
+            .map(String::from)
+            .collect(),
     };
 
     let app = router(&config, state);

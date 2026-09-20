@@ -2,6 +2,9 @@
 name = "diy-jev"
 version = "0.1.0"
 edition = "2024"
+description = "Experimental Jev-compatible classification server powered by llama.cpp"
+readme = "README.md"
+license = "MIT"
 
 [features]
 default = ["cuda"]
@@ -18,5 +21,3 @@ serde_json = "1.0.149"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-
-[dev-dependencies]

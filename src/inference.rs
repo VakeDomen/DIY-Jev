@@ -48,12 +48,16 @@ pub fn resolve_boolean_tokens(
         let tokens = full_tokens[prompt_tokens.len()..].to_vec();
         if tokens.len() != 1 {
             return Err(InferenceError::backend(format!(
-                "raw answer {answer:?} requires {} continuation tokens: {tokens:?}", tokens.len()
+                "raw answer {answer:?} requires {} continuation tokens: {tokens:?}",
+                tokens.len()
             )));
         }
         Ok(tokens[0])
     };
-    Ok(BooleanTokens { true_token: resolve("true")?, false_token: resolve("false")? })
+    Ok(BooleanTokens {
+        true_token: resolve("true")?,
+        false_token: resolve("false")?,
+    })
 }
 
 // ===========================================================================
@@ -103,9 +107,9 @@ fn options(question: &Question) -> (Vec<String>, Vec<String>) {
                 Some(criteria) => labels
                     .iter()
                     .map(|key| {
-                        criteria[key].clone().unwrap_or_else(|| {
-                            if key == "true" { "Yes" } else { "No" }.into()
-                        })
+                        criteria[key]
+                            .clone()
+                            .unwrap_or_else(|| if key == "true" { "Yes" } else { "No" }.into())
                     })
                     .collect(),
                 None => vec!["Yes".to_owned(), "No".to_owned()],
@@ -124,26 +128,37 @@ fn options(question: &Question) -> (Vec<String>, Vec<String>) {
 }
 
 fn escape_tags(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn render_noul_prompt(instructions: &str, state: &str) -> String {
     format!(
         "<state>{}</state><question>{}</question><verdict>\n",
-        escape_tags(state), escape_tags(instructions)
+        escape_tags(state),
+        escape_tags(instructions)
     )
 }
 
 /// Render the shared prefix for a Choice/Score question (everything before
 /// the candidate-specific branch).
-fn render_choice_shared(instructions: &str, state: &str, labels: &[String], descriptions: &[String]) -> String {
-    let options: String = labels.iter()
+fn render_choice_shared(
+    instructions: &str,
+    state: &str,
+    labels: &[String],
+    descriptions: &[String],
+) -> String {
+    let options: String = labels
+        .iter()
         .zip(descriptions.iter())
         .map(|(label, desc)| format!("{}:{}\n", escape_tags(label), escape_tags(desc)))
         .collect();
     format!(
         "<state>{}</state><question>{}</question><options>\n{}</options><candidate>",
-        escape_tags(state), escape_tags(instructions), options
+        escape_tags(state),
+        escape_tags(instructions),
+        options
     )
 }
 
@@ -215,7 +230,9 @@ fn decode_shared_prefix(
     seq_ids: &[i32],
 ) -> Result<(), InferenceError> {
     if seq_ids.is_empty() {
-        return Err(InferenceError::internal("no sequence IDs for shared prefix"));
+        return Err(InferenceError::internal(
+            "no sequence IDs for shared prefix",
+        ));
     }
     let chunk_size = ctx.n_batch() as usize;
     let max_seq = seq_ids.len();
@@ -296,8 +313,12 @@ fn build_batching_info(
 
     if all_suffixes.iter().any(Vec::is_empty) {
         // All suffixes are identical — push the last shared token onto each.
-        let last = shared.pop().ok_or_else(|| InferenceError::internal("empty prefix"))?;
-        for suffix in &mut all_suffixes { suffix.insert(0, last); }
+        let last = shared
+            .pop()
+            .ok_or_else(|| InferenceError::internal("empty prefix"))?;
+        for suffix in &mut all_suffixes {
+            suffix.insert(0, last);
+        }
     }
 
     let total_input = shared.len() + all_suffixes.iter().map(Vec::len).sum::<usize>();
@@ -311,7 +332,11 @@ fn build_batching_info(
         )));
     }
 
-    Ok(BatchingInfo { shared, suffixes: all_suffixes, total_input })
+    Ok(BatchingInfo {
+        shared,
+        suffixes: all_suffixes,
+        total_input,
+    })
 }
 
 // ===========================================================================
@@ -376,9 +401,9 @@ fn batch_score_fast_path(
             let batch_pos = batch.n_tokens();
             batch
                 .add(token, position, &[ci as i32], is_last)
-                .map_err(|e| InferenceError::internal(format!(
-                    "batch add for candidate {ci}: {e}"
-                )))?;
+                .map_err(|e| {
+                    InferenceError::internal(format!("batch add for candidate {ci}: {e}"))
+                })?;
             if is_last {
                 final_batch_positions.push(batch_pos);
             }
@@ -421,15 +446,15 @@ fn batch_score_fallback(
         }
 
         branch_batch.clear();
-        for (_batch_idx, &ci) in still_active.iter().enumerate() {
+        for &ci in &still_active {
             let token = batching.suffixes[ci][depth];
             let position = (shared_len + depth) as i32;
             let is_last = depth + 1 == batching.suffixes[ci].len();
             branch_batch
                 .add(token, position, &[ci as i32], is_last)
-                .map_err(|e| InferenceError::internal(format!(
-                    "branch add at depth {depth}: {e}"
-                )))?;
+                .map_err(|e| {
+                    InferenceError::internal(format!("branch add at depth {depth}: {e}"))
+                })?;
         }
 
         ctx.decode(&mut branch_batch)
@@ -443,7 +468,9 @@ fn batch_score_fallback(
         }
     }
 
-    scores.into_iter().collect::<Option<Vec<_>>>()
+    scores
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
         .ok_or_else(|| InferenceError::internal("some candidates were not scored"))
 }
 
@@ -491,7 +518,9 @@ fn run_choice(
     bool_tokens: &BooleanTokens,
     plan: &Plan,
 ) -> Result<(Answer, usize), InferenceError> {
-    let batching = plan.batching.as_ref()
+    let batching = plan
+        .batching
+        .as_ref()
         .ok_or_else(|| InferenceError::internal("choice plan missing batching info"))?;
 
     let scores = batch_score_candidates(ctx, batching, bool_tokens)?;
@@ -513,7 +542,9 @@ fn run_score(
     bool_tokens: &BooleanTokens,
     plan: &Plan,
 ) -> Result<(Answer, usize), InferenceError> {
-    let batching = plan.batching.as_ref()
+    let batching = plan
+        .batching
+        .as_ref()
         .ok_or_else(|| InferenceError::internal("score plan missing batching info"))?;
 
     let scores = batch_score_candidates(ctx, batching, bool_tokens)?;
@@ -576,32 +607,69 @@ pub fn evaluate_many(
             let (labels, descriptions) = options(question);
             let mut info = match question {
                 Question::Noul { .. } => {
-                    let question_tokens = model.str_to_token(
-                        &render_noul_prompt(&question.instructions_str(), &state), AddBos::Never,
-                    ).map_err(|e| InferenceError::backend(e.to_string()))?;
-                    let mut full = Vec::with_capacity(system.noul_tokens.len() + question_tokens.len());
+                    let question_tokens = model
+                        .str_to_token(
+                            &render_noul_prompt(&question.instructions_str(), &state),
+                            AddBos::Never,
+                        )
+                        .map_err(|e| InferenceError::backend(e.to_string()))?;
+                    let mut full =
+                        Vec::with_capacity(system.noul_tokens.len() + question_tokens.len());
                     full.extend_from_slice(&system.noul_tokens);
                     full.extend_from_slice(&question_tokens);
-                    let last = full.pop().ok_or_else(|| InferenceError::internal("empty prompt"))?;
-                    BatchingInfo { total_input: full.len() + 1, shared: full, suffixes: vec![vec![last]] }
+                    let last = full
+                        .pop()
+                        .ok_or_else(|| InferenceError::internal("empty prompt"))?;
+                    BatchingInfo {
+                        total_input: full.len() + 1,
+                        shared: full,
+                        suffixes: vec![vec![last]],
+                    }
                 }
-                _ => build_batching_info(model, system, &question.instructions_str(), &state, &labels, &descriptions)?,
+                _ => build_batching_info(
+                    model,
+                    system,
+                    &question.instructions_str(),
+                    &state,
+                    &labels,
+                    &descriptions,
+                )?,
             };
             // Identical descriptions can leave empty suffixes. Keep the last
             // shared token on each branch so every candidate has a logit row.
             if info.suffixes.iter().any(Vec::is_empty) {
-                let last = info.shared.pop().ok_or_else(|| InferenceError::internal("empty prefix"))?;
-                for suffix in &mut info.suffixes { suffix.insert(0, last); }
-                info.total_input = info.shared.len() + info.suffixes.iter().map(Vec::len).sum::<usize>();
+                let last = info
+                    .shared
+                    .pop()
+                    .ok_or_else(|| InferenceError::internal("empty prefix"))?;
+                for suffix in &mut info.suffixes {
+                    suffix.insert(0, last);
+                }
+                info.total_input =
+                    info.shared.len() + info.suffixes.iter().map(Vec::len).sum::<usize>();
             }
-            Ok(Plan { name: name.clone(), question: question.clone(), labels, state, batching: Some(info) })
+            Ok(Plan {
+                name: name.clone(),
+                question: question.clone(),
+                labels,
+                state,
+                batching: Some(info),
+            })
         })();
         let plan = match prepared {
             Ok(plan) => plan,
             Err(_) => {
                 flush_wave(ctx, &mut wave, &mut results, bool_tokens, model_identity);
-                sequences = 0; tokens = 0;
-                results[index] = Some(evaluate(model, ctx, system, request, bool_tokens, model_identity));
+                sequences = 0;
+                tokens = 0;
+                results[index] = Some(evaluate(
+                    model,
+                    ctx,
+                    system,
+                    request,
+                    bool_tokens,
+                    model_identity,
+                ));
                 continue;
             }
         };
@@ -616,9 +684,11 @@ pub fn evaluate_many(
         }
         if sequences + n > max_sequences || tokens + size >= ctx.n_ctx() as usize {
             flush_wave(ctx, &mut wave, &mut results, bool_tokens, model_identity);
-            sequences = 0; tokens = 0;
+            sequences = 0;
+            tokens = 0;
         }
-        sequences += n; tokens += size;
+        sequences += n;
+        tokens += size;
         wave.push((index, plan));
     }
     flush_wave(ctx, &mut wave, &mut results, bool_tokens, model_identity);
@@ -632,45 +702,81 @@ fn flush_wave(
     bool_tokens: &BooleanTokens,
     model_identity: &str,
 ) {
-    if wave.is_empty() { return; }
+    if wave.is_empty() {
+        return;
+    }
     let scored = score_wave(ctx, wave, bool_tokens);
     match scored {
-        Err(error) => for (index, _) in wave.drain(..) { results[index] = Some(Err(error.clone())); },
-        Ok(scores) => for ((index, plan), scores) in wave.drain(..).zip(scores) {
-            let answer = (|| {
-                if matches!(plan.question, Question::Noul { .. }) {
-                    return Ok(Answer::Noul { noul: sigmoid(scores[0]) });
-                }
-                let probabilities = softmax(&scores)?;
-                let best = argmax(&probabilities);
-                let confidence = probabilities[best];
-                let score = probabilities.iter().enumerate().map(|(i, p)| i as f32 * p).sum();
-                let probs = plan.labels.iter().cloned().zip(probabilities).collect();
-                Ok(match &plan.question {
-                    Question::Choice { .. } => Answer::Choice { choice: plan.labels[best].clone(), confidence, probabilities: probs },
-                    Question::Score { criteria, .. } => Answer::Score {
-                        score, confidence, probabilities: probs,
-                        legend: criteria.iter().enumerate().map(|(i, s)| (i.to_string(), s.clone())).collect(),
+        Err(error) => {
+            for (index, _) in wave.drain(..) {
+                results[index] = Some(Err(error.clone()));
+            }
+        }
+        Ok(scores) => {
+            for ((index, plan), scores) in wave.drain(..).zip(scores) {
+                let answer = (|| {
+                    if matches!(plan.question, Question::Noul { .. }) {
+                        return Ok(Answer::Noul {
+                            noul: sigmoid(scores[0]),
+                        });
+                    }
+                    let probabilities = softmax(&scores)?;
+                    let best = argmax(&probabilities);
+                    let confidence = probabilities[best];
+                    let score = probabilities
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| i as f32 * p)
+                        .sum();
+                    let probs = plan.labels.iter().cloned().zip(probabilities).collect();
+                    Ok(match &plan.question {
+                        Question::Choice { .. } => Answer::Choice {
+                            choice: plan.labels[best].clone(),
+                            confidence,
+                            probabilities: probs,
+                        },
+                        Question::Score { criteria, .. } => Answer::Score {
+                            score,
+                            confidence,
+                            probabilities: probs,
+                            legend: criteria
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| (i.to_string(), s.clone()))
+                                .collect(),
+                        },
+                        _ => unreachable!(),
+                    })
+                })();
+                results[index] = Some(answer.map(|answer| EvaluateResponse {
+                    model: model_identity.into(),
+                    answers: BTreeMap::from([(plan.name, answer)]),
+                    usage: Usage {
+                        input_tokens: plan.batching.unwrap().total_input,
+                        output_tokens: 1,
                     },
-                    _ => unreachable!(),
-                })
-            })();
-            results[index] = Some(answer.map(|answer| EvaluateResponse {
-                model: model_identity.into(), answers: BTreeMap::from([(plan.name, answer)]),
-                usage: Usage { input_tokens: plan.batching.unwrap().total_input, output_tokens: 1 },
-            }));
-        },
+                }));
+            }
+        }
     }
 }
 
 fn score_wave(
-    ctx: &mut LlamaContext<'_>, wave: &[(usize, Plan)], bool_tokens: &BooleanTokens,
+    ctx: &mut LlamaContext<'_>,
+    wave: &[(usize, Plan)],
+    bool_tokens: &BooleanTokens,
 ) -> Result<Vec<Vec<f32>>, InferenceError> {
     ctx.clear_kv_cache();
     let cap = ctx.n_batch() as usize;
-    let seq_count: usize = wave.iter().map(|(_, p)| p.batching.as_ref().unwrap().suffixes.len()).sum();
+    let seq_count: usize = wave
+        .iter()
+        .map(|(_, p)| p.batching.as_ref().unwrap().suffixes.len())
+        .sum();
     let mut batch = LlamaBatch::new(cap, seq_count as i32);
-    let mut scores: Vec<Vec<f32>> = wave.iter().map(|(_, p)| vec![0.0; p.batching.as_ref().unwrap().suffixes.len()]).collect();
+    let mut scores: Vec<Vec<f32>> = wave
+        .iter()
+        .map(|(_, p)| vec![0.0; p.batching.as_ref().unwrap().suffixes.len()])
+        .collect();
     let mut rows: Vec<(i32, usize, usize)> = Vec::new();
     // Decode all prefixes together, then all branches. Read output rows before
     // any following decode overwrites the logits buffer.
@@ -678,19 +784,28 @@ fn score_wave(
         let mut offset = 0;
         for (wi, (_, plan)) in wave.iter().enumerate() {
             let info = plan.batching.as_ref().unwrap();
-            let ids: Vec<i32> = (offset..offset + info.suffixes.len()).map(|i| i as i32).collect();
+            let ids: Vec<i32> = (offset..offset + info.suffixes.len())
+                .map(|i| i as i32)
+                .collect();
             let streams: Vec<(&[LlamaToken], Vec<i32>, usize, usize)> = if phase == 0 {
                 vec![(&info.shared, ids.clone(), 0, 0)]
             } else {
-                info.suffixes.iter().enumerate().map(|(ci, s)| (s.as_slice(), vec![ids[ci]], info.shared.len(), ci)).collect()
+                info.suffixes
+                    .iter()
+                    .enumerate()
+                    .map(|(ci, s)| (s.as_slice(), vec![ids[ci]], info.shared.len(), ci))
+                    .collect()
             };
             for (stream, ids, start, ci) in streams {
                 for (j, token) in stream.iter().enumerate() {
                     let last = phase == 1 && j + 1 == stream.len();
                     let row = batch.n_tokens();
-                    batch.add(*token, (start + j) as i32, &ids, last)
+                    batch
+                        .add(*token, (start + j) as i32, &ids, last)
                         .map_err(|e| InferenceError::internal(e.to_string()))?;
-                    if last { rows.push((row, wi, ci)); }
+                    if last {
+                        rows.push((row, wi, ci));
+                    }
                     if batch.n_tokens() as usize == cap {
                         decode_wave_chunk(ctx, &mut batch, &mut rows, &mut scores, bool_tokens)?;
                     }
@@ -698,20 +813,32 @@ fn score_wave(
             }
             offset += info.suffixes.len();
         }
-        if batch.n_tokens() > 0 { decode_wave_chunk(ctx, &mut batch, &mut rows, &mut scores, bool_tokens)?; }
+        if batch.n_tokens() > 0 {
+            decode_wave_chunk(ctx, &mut batch, &mut rows, &mut scores, bool_tokens)?;
+        }
     }
-    tracing::debug!(requests = wave.len(), sequences = seq_count, "cross-request batch completed");
+    tracing::debug!(
+        requests = wave.len(),
+        sequences = seq_count,
+        "cross-request batch completed"
+    );
     Ok(scores)
 }
 
 fn decode_wave_chunk(
-    ctx: &mut LlamaContext<'_>, batch: &mut LlamaBatch,
-    rows: &mut Vec<(i32, usize, usize)>, scores: &mut [Vec<f32>], tokens: &BooleanTokens,
+    ctx: &mut LlamaContext<'_>,
+    batch: &mut LlamaBatch,
+    rows: &mut Vec<(i32, usize, usize)>,
+    scores: &mut [Vec<f32>],
+    tokens: &BooleanTokens,
 ) -> Result<(), InferenceError> {
-    ctx.decode(batch).map_err(|e| InferenceError::backend(format!("cross-request decode: {e}")))?;
+    ctx.decode(batch)
+        .map_err(|e| InferenceError::backend(format!("cross-request decode: {e}")))?;
     for (row, request, candidate) in rows.drain(..) {
         let value = boolean_log_odds_from_slice(ctx.get_logits_ith(row), tokens)?;
-        if !value.is_finite() { return Err(InferenceError::backend("non-finite boolean score")); }
+        if !value.is_finite() {
+            return Err(InferenceError::backend("non-finite boolean score"));
+        }
         scores[request][candidate] = value;
     }
     batch.clear();
@@ -735,9 +862,9 @@ pub fn evaluate(
     let mut plans: Vec<Plan> = Vec::with_capacity(request.questions.len());
 
     for (name, question) in request.questions {
-        question.validate().map_err(|msg| {
-            InferenceError::validation(format!("question {name:?}: {msg}"))
-        })?;
+        question
+            .validate()
+            .map_err(|msg| InferenceError::validation(format!("question {name:?}: {msg}")))?;
         let (labels, descriptions) = options(&question);
 
         let state = state.clone();
@@ -860,7 +987,9 @@ mod tests {
         };
 
         match answer {
-            Answer::Score { score, legend: l, .. } => {
+            Answer::Score {
+                score, legend: l, ..
+            } => {
                 assert!((score - 1.6).abs() < 1e-6);
                 assert_eq!(l, legend);
             }
@@ -921,10 +1050,7 @@ mod tests {
     fn options_choice_fallback_uses_key_as_description() {
         let question = Question::Choice {
             instructions: Value::String("pick".into()),
-            criteria: BTreeMap::from([
-                ("foo".into(), None),
-                ("bar".into(), None),
-            ]),
+            criteria: BTreeMap::from([("foo".into(), None), ("bar".into(), None)]),
         };
         let (labels, descriptions) = options(&question);
         assert_eq!(labels, vec!["bar".to_string(), "foo".to_string()]);
@@ -950,7 +1076,14 @@ mod tests {
         let logits = vec![0.0, 1.0, 8.0, 3.0, 2.0, 3.0];
         let expected = 8.0 - 3.0;
         assert_eq!(
-            boolean_log_odds_from_slice(&logits, &BooleanTokens { true_token, false_token }).unwrap(),
+            boolean_log_odds_from_slice(
+                &logits,
+                &BooleanTokens {
+                    true_token,
+                    false_token
+                }
+            )
+            .unwrap(),
             expected
         );
     }

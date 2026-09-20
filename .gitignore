@@ -34,3 +34,9 @@ models
 /benchmark-results/
 benchmarks/__pycache__/
 benchmarks/results/
+.env
+.env.*
+!.env.example
+**/__pycache__/
+*.py[cod]
+.venv/

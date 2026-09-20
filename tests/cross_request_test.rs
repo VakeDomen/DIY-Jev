@@ -55,7 +55,15 @@ fn cross_request_matches_individual() {
         .iter()
         .map(|s| serde_json::from_str(s).unwrap())
         .collect();
-    let batched = evaluate_many(&model, &mut ctx, &system, requests.clone(), &tokens, "test", 5);
+    let batched = evaluate_many(
+        &model,
+        &mut ctx,
+        &system,
+        requests.clone(),
+        &tokens,
+        "test",
+        5,
+    );
     for (i, (request, result)) in requests.into_iter().zip(batched).enumerate() {
         if i == 4 {
             assert!(result.is_err());

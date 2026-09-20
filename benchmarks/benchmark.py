@@ -18,8 +18,10 @@ import argparse
 import concurrent.futures
 import hashlib
 import importlib
+import importlib.metadata
 import json
 import math
+import platform
 import random
 import re
 import statistics
@@ -62,9 +64,9 @@ RADAR_LABELS = {
     "arc_challenge": "ARC-Challenge",
     "winogrande": "WinoGrande",
     "hellaswag": "HellaSwag",
-    "gsm8k_mc4": "GSM8K\n4 choices",
-    "gsm8k_mc10": "GSM8K\n10 choices",
-    "chess": "Chess\n4 legal moves",
+    "gsm8k_mc4": "GSM8K\n(4-way)",
+    "gsm8k_mc10": "GSM8K\n(10-way)",
+    "chess": "Chess\n(4 moves)",
 }
 PUBLISHED_OPENJEV = {
     "mmlu": {"examples": 14042, "accuracy": 0.47151402934054976},
@@ -173,6 +175,8 @@ def build_parser() -> argparse.ArgumentParser:
     server.add_argument("--url", default="http://127.0.0.1:8080/v1/evaluate")
     server.add_argument("--timeout", type=float, default=120.0)
     server.add_argument("--model-name", help="model name for results_<name>; defaults to response model")
+    server.add_argument("--provenance", type=Path,
+                        help="JSON object containing server model hash, commit, hardware, prompt and configuration")
     server.add_argument(
         "--concurrency",
         type=positive_int,
@@ -634,20 +638,29 @@ def plot_radar(
     series_labels = list(labels) if labels else [result["backend"]["name"] for result in results]
     angles = np.linspace(0, 2 * np.pi, len(RADAR_TASKS), endpoint=False)
     closed_angles = np.r_[angles, angles[:1]]
+
+    # ── Figure setup ──────────────────────────────────────────────────────────
     figure = plt.figure(figsize=(9.2, 10.4), facecolor="white")
     axis = figure.add_subplot(111, polar=True)
-    figure.subplots_adjust(top=0.86, bottom=0.17)
+    figure.subplots_adjust(top=0.86, bottom=0.22)
+
     axis.set_theta_offset(np.pi / 2)
     axis.set_theta_direction(-1)
-    axis.set_facecolor("#f4f5f7")
+    axis.set_facecolor("white")
     axis.set_ylim(0, 100)
     axis.set_yticks([20, 40, 60, 80, 100])
-    axis.set_yticklabels([f"{value}%" for value in [20, 40, 60, 80, 100]], color="#9aa0a6")
+    axis.set_yticklabels(
+        [f"{value}%" for value in [20, 40, 60, 80, 100]],
+        color="#9aa0a6",
+        fontsize=8,
+    )
     axis.set_xticks(angles)
-    axis.set_xticklabels([RADAR_LABELS[task] for task in RADAR_TASKS])
-    axis.grid(color="#d0d4d9", linewidth=0.8)
+    axis.set_xticklabels([RADAR_LABELS[task] for task in RADAR_TASKS], fontsize=9)
+    axis.grid(color="#d0d4d9", linewidth=0.6, alpha=0.35)
     axis.spines["polar"].set_color("#c8ccd1")
+    axis.spines["polar"].set_alpha(0.30)
 
+    # ── Published baseline (OpenJev NLI-4B) ──────────────────────────────────
     published_values = np.array(
         [100 * PUBLISHED_OPENJEV[task]["accuracy"] for task in RADAR_TASKS],
         dtype=float,
@@ -658,41 +671,80 @@ def plot_radar(
         closed_published,
         color="#4a4a4a",
         linewidth=2,
+        linestyle="--",
         marker="o",
         markersize=4,
-        label="OpenJev NLI-4B · published",
+        label="OpenJev NLI-4B (published)",
+        zorder=5,
     )
-    axis.fill(closed_angles, closed_published, color="#4a4a4a", alpha=0.06)
 
-    for result, label in zip(results, series_labels):
+    # ── DIY model series ─────────────────────────────────────────────────────
+    # Distinct colours, markers, and line styles for up to ~8 series.
+    palette = [
+        "#E74C3C",  # red
+        "#3498DB",  # blue
+        "#2ECC71",  # green
+        "#9B59B6",  # purple
+        "#F39C12",  # orange
+        "#1ABC9C",  # teal
+        "#E67E22",  # dark orange
+        "#2980B9",  # dark blue
+    ]
+    markers = ["s", "D", "^", "v", "P", "X", "h", "<"]
+
+    for index, (result, label) in enumerate(zip(results, series_labels)):
         values = np.array(
             [100 * result["tasks"][task]["accuracy"] for task in RADAR_TASKS],
             dtype=float,
         )
         closed_values = np.r_[values, values[:1]]
-        axis.plot(closed_angles, closed_values, linewidth=2, marker="o", markersize=4, label=label)
-        axis.fill(closed_angles, closed_values, alpha=0.06)
+        color = palette[index % len(palette)]
+        marker = markers[index % len(markers)]
+        is_primary = index == 0
+
+        axis.plot(
+            closed_angles,
+            closed_values,
+            color=color,
+            linewidth=2.0,
+            linestyle="-",
+            marker=marker,
+            markersize=5,
+            markerfacecolor=color,
+            markeredgecolor=color,
+            markeredgewidth=0.5,
+            alpha=0.85,
+            label=label,
+            zorder=7,
+        )
+
+    # ── Title & subtitle ─────────────────────────────────────────────────────
     axis.set_title(title, fontsize=17, fontweight="bold", pad=42)
-    figure.text(
-        0.5,
-        0.905,
-        "multiple-choice top-1 accuracy, common 0–100% scale",
-        ha="center",
-        fontsize=9.5,
-        color="#666",
+
+    # ── Legend (2–3 columns below chart) ────────────────────────────────────
+    axis.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.13),
+        ncol=min(3, max(2, (len(series_labels) + 2) // 2)),
+        frameon=False,
+        fontsize=9,
+        handletextpad=0.6,
+        columnspacing=1.2,
     )
-    axis.legend(loc="upper center", bbox_to_anchor=(0.5, -0.07), frameon=False)
+
+    # ── Footnote ────────────────────────────────────────────────────────────
     figure.text(
         0.5,
-        0.035,
+        0.018,
         "OpenJev values are copied from its published result files. "
         "Polygon area is not an aggregate score.",
         ha="center",
-        fontsize=8,
-        color="#777",
+        fontsize=9,
+        alpha=0.65,
     )
+
     output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output, dpi=170)
+    figure.savefig(output, dpi=170, bbox_inches="tight")
     plt.close(figure)
     print(f"wrote {output}")
 
@@ -718,7 +770,9 @@ def install_packages(*packages: str) -> None:
         "--upgrade",
         "--target",
         str(LOCAL_DEPS_DIR),
-        *packages,
+        "--constraint",
+        str(Path(__file__).parent / "requirements.txt"),
+        *pinned_packages(packages),
     ]
     try:
         subprocess.run(command, check=True)
@@ -730,6 +784,32 @@ def install_packages(*packages: str) -> None:
     if str(LOCAL_DEPS_DIR) not in sys.path:
         sys.path.insert(0, str(LOCAL_DEPS_DIR))
     importlib.invalidate_caches()
+
+
+def pinned_packages(packages: Sequence[str]) -> list[str]:
+    lines = (Path(__file__).parent / "requirements.txt").read_text().splitlines()
+    pins = {line.split("==")[0]: line for line in lines if "==" in line and not line.startswith("#")}
+    return [pins[name] for name in packages]
+
+
+def client_provenance() -> dict[str, Any]:
+    root = Path(__file__).resolve().parent.parent
+    def git(*args: str) -> str | None:
+        try:
+            return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL,
+                                           text=True, timeout=5).strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+    versions = {}
+    for name in ("datasets", "chess", "numpy", "matplotlib"):
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            pass
+    return {"git_commit": git("rev-parse", "HEAD"),
+            "git_status": git("status", "--porcelain"),
+            "python": platform.python_version(), "platform": platform.platform(),
+            "dependencies": versions}
 
 
 def prepare_dataset(task: str, output: Path, limit: int | None, seed: int) -> None:
@@ -746,7 +826,17 @@ def prepare_dataset(task: str, output: Path, limit: int | None, seed: int) -> No
                 "benchmark data dependencies remain unavailable after installation"
             ) from error
 
+    from huggingface_hub import HfApi
+    manifest_path = output.with_suffix(".manifest.json")
+    previous = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    revisions = dict(previous.get("dataset_revisions", {}))
     def load_dataset(*args: Any, **kwargs: Any) -> Any:
+        repo_id = args[0]
+        if repo_id not in revisions:
+            revisions[repo_id] = HfApi().dataset_info(repo_id).sha
+        if not revisions[repo_id]:
+            raise RuntimeError(f"could not resolve dataset revision: {repo_id}")
+        kwargs["revision"] = revisions[repo_id]
         kwargs.setdefault("cache_dir", str(BENCHMARK_DATA_DIR / "huggingface"))
         return huggingface_load_dataset(*args, **kwargs)
 
@@ -762,6 +852,9 @@ def prepare_dataset(task: str, output: Path, limit: int | None, seed: int) -> No
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(f"wrote {len(rows)} examples to {output}")
+    manifest_path.write_text(json.dumps({"dataset_revisions": revisions, "seed": seed,
+        "limit": limit, "task": task, "fixture_sha256": file_sha256(output),
+        "client": client_provenance()}, indent=2) + "\n")
 
 
 def build_task_rows(
@@ -1093,6 +1186,11 @@ def main() -> int:
         args.data = data_path
 
         examples = load_examples(args.data, args.limit, args.seed)
+        server_provenance = None
+        if args.provenance:
+            server_provenance = json.loads(args.provenance.read_text())
+            if not isinstance(server_provenance, dict):
+                raise ValueError("--provenance must contain a JSON object")
         backend = ServerBackend(args.url, args.timeout, args.instruction, args.state_format)
         result = run_backend(
             examples,
@@ -1112,6 +1210,15 @@ def main() -> int:
             "sha256": file_sha256(args.data),
             "selection_sha256": examples_sha256(examples),
         }
+        manifest_path = args.data.with_suffix(".manifest.json")
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text())
+            if manifest.get("fixture_sha256") == result["dataset"]["sha256"]:
+                result["dataset"]["manifest"] = manifest
+            else:
+                print("warning: fixture manifest hash mismatch; manifest not attached")
+        result["provenance"] = {"client": client_provenance(),
+                                "server_user_supplied": server_provenance}
         model_name = args.model_name or backend.model_name
         result["backend"]["model"] = model_name
         slug = re.sub(r"[^a-zA-Z0-9_.-]+", "_", model_name).strip("._-") or "unknown"

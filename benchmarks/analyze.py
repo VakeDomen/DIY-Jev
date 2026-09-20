@@ -12,6 +12,7 @@ from pathlib import Path
 from benchmark import RADAR_TASKS, RADAR_LABELS, PUBLISHED_OPENJEV, install_plot_dependencies
 
 ROOT = Path(__file__).resolve().parent
+UNVERIFIED_RUNS = {"results_granite4.2_3b", "results_k2_horizon"}
 
 
 def load_runs(paths):
@@ -32,8 +33,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("results", nargs="*", type=Path)
     parser.add_argument("--output-dir", type=Path, default=ROOT / "charts")
+    parser.add_argument("--include-unverified", action="store_true",
+                        help="include historical runs with unresolved duplicate model outputs")
     args = parser.parse_args()
     paths = args.results or sorted(ROOT.glob("results_*/*.json"))
+    excluded = [p for p in paths if p.parent.name in UNVERIFIED_RUNS]
+    if not args.include_unverified:
+        paths = [p for p in paths if p not in excluded]
+        for path in excluded:
+            print(f"Excluded unverified model identity: {path}")
     if not paths:
         parser.error("no results found in benchmarks/results_*; supply result JSON paths")
     runs = load_runs(paths)
@@ -134,7 +142,7 @@ def main():
 
     # Machine-readable task table, including observed sample sizes and chance accuracy.
     with (out / "task_metrics.csv").open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["model", "task", "n", "accuracy", "chance_accuracy", "openjev_accuracy",
                          "delta", "published_n", "nll", "brier", "ece_10", "latency_p50_ms"])
         for name, data, _ in runs:
@@ -151,6 +159,8 @@ def main():
                                  s["ece_10"], s["latency_ms"]["p50"]])
 
     lines = ["# Benchmark analysis", "", comparability + ".", "",
+             "Historical runs have incomplete server provenance; these are exploratory comparisons.",
+             "See ../RESULTS.md for exclusions and validation requirements.", "",
              "Macro accuracy weights each available task equally; micro accuracy weights every question equally.",
              "Published OpenJev scores are full-suite reference values, not paired predictions.",
              "GSM8K distractor ordering, dataset revisions and subset selection can affect comparability.", "",
@@ -181,7 +191,9 @@ def main():
         lines += ["", "## Data checks", ""] + findings
         for finding in findings:
             print(finding)
-    lines += ["", "## Sources", ""] + [f"- {path}" for _, _, path in runs]
+    if excluded and not args.include_unverified:
+        lines += ["", "## Excluded runs", ""] + [f"- {p.parent.name}: unresolved model identity" for p in excluded]
+    lines += ["", "## Sources", ""] + [f"- {path.parent.name}/{path.name}" for _, _, path in runs]
     lines += ["- https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json",
               "- https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_extra_mc.json"]
     (out / "README.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

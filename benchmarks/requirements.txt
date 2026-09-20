@@ -1,0 +1,7 @@
+# Direct dependencies pinned to the versions used during publication cleanup.
+# Transitive dependencies are not locked; record pip freeze for archival runs.
+datasets==5.0.1
+python-chess==1.999
+chess==1.11.2
+matplotlib==3.11.2
+numpy==2.5.3

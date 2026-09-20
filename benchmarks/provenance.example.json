@@ -1,0 +1,17 @@
+{
+  "model_sha256": "REPLACE with sha256sum of the loaded GGUF",
+  "model_repository_revision": "REPLACE with upstream repository and commit",
+  "quantization": "REPLACE",
+  "server_git_commit": "REPLACE with git rev-parse HEAD on the server",
+  "server_worktree_clean": false,
+  "hardware": "REPLACE with CPU/GPU model, memory and driver version",
+  "prompt": "REPLACE with exact default or custom system prompt text",
+  "configuration": {
+    "JEV_CONTEXT_SIZE": 32768,
+    "JEV_BATCH_SIZE": 8192,
+    "JEV_UBATCH_SIZE": 512,
+    "JEV_N_SEQ_MAX": 16,
+    "JEV_REQUEST_BATCH_SIZE": 1,
+    "JEV_REQUEST_BATCH_WAIT_MS": 2
+  }
+}

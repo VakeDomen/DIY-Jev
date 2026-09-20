@@ -19,10 +19,7 @@ fn default_model_identity() -> String {
 }
 
 fn default_model_aliases() -> Vec<String> {
-    vec![
-        "typesafe/jev".into(),
-        "@cf/typesafe/jev".into(),
-    ]
+    vec!["typesafe/jev".into(), "@cf/typesafe/jev".into()]
 }
 
 /// Verify that Config::new rejects zero values for batch_size, max_queue,
@@ -34,13 +31,85 @@ fn config_rejects_zero_values() {
     let ctx = NonZeroU32::new(4096).unwrap();
 
     // Zero batch_size
-    assert!(Config::new("model".into(), addr, ctx, 0, 512, 64, 100, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases(), None).is_err());
+    assert!(
+        Config::new(
+            "model".into(),
+            addr,
+            ctx,
+            0,
+            512,
+            64,
+            100,
+            16,
+            5,
+            2,
+            default_hf_config(),
+            default_model_identity(),
+            default_model_aliases(),
+            None
+        )
+        .is_err()
+    );
     // Zero max_queue
-    assert!(Config::new("model".into(), addr, ctx, 512, 512, 0, 100, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases(), None).is_err());
+    assert!(
+        Config::new(
+            "model".into(),
+            addr,
+            ctx,
+            512,
+            512,
+            0,
+            100,
+            16,
+            5,
+            2,
+            default_hf_config(),
+            default_model_identity(),
+            default_model_aliases(),
+            None
+        )
+        .is_err()
+    );
     // Zero max_questions
-    assert!(Config::new("model".into(), addr, ctx, 512, 512, 64, 0, 16, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases(), None).is_err());
+    assert!(
+        Config::new(
+            "model".into(),
+            addr,
+            ctx,
+            512,
+            512,
+            64,
+            0,
+            16,
+            5,
+            2,
+            default_hf_config(),
+            default_model_identity(),
+            default_model_aliases(),
+            None
+        )
+        .is_err()
+    );
     // Zero n_seq_max
-    assert!(Config::new("model".into(), addr, ctx, 512, 512, 64, 100, 0, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases(), None).is_err());
+    assert!(
+        Config::new(
+            "model".into(),
+            addr,
+            ctx,
+            512,
+            512,
+            64,
+            100,
+            0,
+            5,
+            2,
+            default_hf_config(),
+            default_model_identity(),
+            default_model_aliases(),
+            None
+        )
+        .is_err()
+    );
 }
 
 /// Verify that Config::new accepts positive values.
@@ -49,8 +118,23 @@ fn config_accepts_positive_values() {
     let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let ctx = NonZeroU32::new(4096).unwrap();
 
-    let config = Config::new("model".into(), addr, ctx, 512, 512, 32, 50, 64, 5, 2, default_hf_config(), default_model_identity(), default_model_aliases(), None)
-        .expect("positive config values should be accepted");
+    let config = Config::new(
+        "model".into(),
+        addr,
+        ctx,
+        512,
+        512,
+        32,
+        50,
+        64,
+        5,
+        2,
+        default_hf_config(),
+        default_model_identity(),
+        default_model_aliases(),
+        None,
+    )
+    .expect("positive config values should be accepted");
     assert_eq!(config.batch_size, 512);
     assert_eq!(config.ubatch_size, 512);
     assert_eq!(config.max_queue, 32);
@@ -128,10 +212,7 @@ fn request_response_round_trip() {
                     ]),
                 },
             ),
-            (
-                "refund".into(),
-                Answer::Noul { noul: 0.92 },
-            ),
+            ("refund".into(), Answer::Noul { noul: 0.92 }),
             (
                 "severity".into(),
                 Answer::Score {
@@ -174,17 +255,14 @@ fn request_response_round_trip() {
 #[test]
 fn supports_instruction_types() {
     // String instructions
-    let q_str: Question = serde_json::from_str(
-        r#"{"type": "noul", "instructions": "Is this correct?"}"#,
-    )
-    .unwrap();
+    let q_str: Question =
+        serde_json::from_str(r#"{"type": "noul", "instructions": "Is this correct?"}"#).unwrap();
     assert_eq!(q_str.instructions_str(), "Is this correct?");
 
     // Array instructions (rendered as bullet list)
-    let q_arr: Question = serde_json::from_str(
-        r#"{"type": "noul", "instructions": ["step one", "step two"]}"#,
-    )
-    .unwrap();
+    let q_arr: Question =
+        serde_json::from_str(r#"{"type": "noul", "instructions": ["step one", "step two"]}"#)
+            .unwrap();
     assert_eq!(q_arr.instructions_str(), "- step one\n- step two");
 
     // Object instructions (rendered as JSON)
@@ -213,8 +291,14 @@ fn choice_renders_option_names() {
 
     // Verify the criteria keys are accessible through the Rust API.
     if let Question::Choice { criteria, .. } = &question {
-        assert!(criteria.contains_key("refund"), "option name 'refund' must be present");
-        assert!(criteria.contains_key("exchange"), "option name 'exchange' must be present");
+        assert!(
+            criteria.contains_key("refund"),
+            "option name 'refund' must be present"
+        );
+        assert!(
+            criteria.contains_key("exchange"),
+            "option name 'exchange' must be present"
+        );
         assert_eq!(criteria.len(), 2, "must have exactly 2 criteria entries");
     } else {
         panic!("expected Question::Choice");
@@ -235,7 +319,10 @@ fn cloudflare_wrapper() {
     }"#;
     let body: RequestBody = serde_json::from_str(json).unwrap();
     match body {
-        RequestBody::Cloudflare { model: _model, input } => {
+        RequestBody::Cloudflare {
+            model: _model,
+            input,
+        } => {
             assert_eq!(_model, Some("typesafe/jev".into()));
             assert_eq!(input.questions.len(), 1);
         }

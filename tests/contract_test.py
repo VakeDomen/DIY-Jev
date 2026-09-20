@@ -19,8 +19,8 @@ try:
     import yaml
     from jsonschema import validate, ValidationError
 except ImportError as error:
-    print(f"SKIP: {error} — install pyyaml and jsonschema")
-    sys.exit(0)
+    print(f"ERROR: {error} — install dependencies with pip install -r tests/requirements.txt")
+    sys.exit(1)
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

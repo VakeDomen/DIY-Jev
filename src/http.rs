@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
     extract::rejection::JsonRejection,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -102,17 +102,38 @@ mod tests {
         // status is hard-coded in the match arms, and we verify that each
         // InferenceError produces the correct status.
         let cases: Vec<(ErrorKind, StatusCode, &str)> = vec![
-            (ErrorKind::Validation, StatusCode::UNPROCESSABLE_ENTITY, "validation"),
-            (ErrorKind::Backend, StatusCode::BAD_GATEWAY, "backend failure"),
-            (ErrorKind::Overload, StatusCode::SERVICE_UNAVAILABLE, "queue full"),
-            (ErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            (
+                ErrorKind::Validation,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation",
+            ),
+            (
+                ErrorKind::Backend,
+                StatusCode::BAD_GATEWAY,
+                "backend failure",
+            ),
+            (
+                ErrorKind::Overload,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "queue full",
+            ),
+            (
+                ErrorKind::Internal,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ),
         ];
         for (kind, expected_status, msg) in cases {
-            let err = InferenceError { kind: kind, message: msg.into() };
+            let err = InferenceError {
+                kind,
+                message: msg.into(),
+            };
             // Replicate the match from handle_evaluate.
             let got = err.map_status();
-            assert_eq!(got, expected_status,
-                "ErrorKind::{kind:?} should produce HTTP {expected_status}, got {got}");
+            assert_eq!(
+                got, expected_status,
+                "ErrorKind::{kind:?} should produce HTTP {expected_status}, got {got}"
+            );
         }
     }
 }
@@ -154,13 +175,15 @@ async fn handle_evaluate(
     let Json(body) = body?;
 
     // Validate the model field if present.
-    let aliases: Vec<&str> = state.valid_model_aliases.iter().map(String::as_str).collect();
-    body.validate_model(&aliases).map_err(|msg| {
-        ApiError {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            message: msg,
-            kind: ErrorKind::Validation,
-        }
+    let aliases: Vec<&str> = state
+        .valid_model_aliases
+        .iter()
+        .map(String::as_str)
+        .collect();
+    body.validate_model(&aliases).map_err(|msg| ApiError {
+        status: StatusCode::UNPROCESSABLE_ENTITY,
+        message: msg,
+        kind: ErrorKind::Validation,
     })?;
 
     let (response_tx, response_rx) = oneshot::channel();
@@ -188,15 +211,11 @@ async fn handle_evaluate(
         response.model = state.model_identity.clone();
     }
 
-    inference_result
-        .map(Json)
-        .map_err(|err| {
-            ApiError {
-                status: err.map_status(),
-                message: err.message,
-                kind: err.kind,
-            }
-        })
+    inference_result.map(Json).map_err(|err| ApiError {
+        status: err.map_status(),
+        message: err.message,
+        kind: err.kind,
+    })
 }
 
 async fn handle_health() -> &'static str {

@@ -108,7 +108,7 @@ impl Config {
                 }
                 parsed
             }
-            Err(_) => 64,
+            Err(_) => 16,
         };
 
         let ubatch_size = match std::env::var("JEV_UBATCH_SIZE") {
@@ -132,7 +132,7 @@ impl Config {
                 );
                 parsed
             }
-            Err(_) => 5,
+            Err(_) => 1,
         };
 
         let request_batch_wait_ms = match std::env::var("JEV_REQUEST_BATCH_WAIT_MS") {
@@ -140,10 +140,7 @@ impl Config {
                 let parsed: u64 = value.parse().with_context(|| {
                     format!("invalid JEV_REQUEST_BATCH_WAIT_MS: {value:?} is not a valid u64")
                 })?;
-                anyhow::ensure!(
-                    parsed <= 1000,
-                    "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000"
-                );
+                anyhow::ensure!(parsed <= 1000, "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000");
                 parsed
             }
             Err(_) => 2,
@@ -151,15 +148,12 @@ impl Config {
 
         let hf_download = HfDownloadConfig::from_env();
 
-        let model_identity = std::env::var("JEV_MODEL_IDENTITY")
-            .unwrap_or_else(|_| "diy-jev-0.1.0".into());
+        let model_identity =
+            std::env::var("JEV_MODEL_IDENTITY").unwrap_or_else(|_| "diy-jev-0.1.0".into());
 
         let valid_model_aliases = match std::env::var("JEV_MODEL_ALIASES") {
             Ok(val) => val.split(',').map(|s| s.trim().to_string()).collect(),
-            Err(_) => vec![
-                "typesafe/jev".into(),
-                "@cf/typesafe/jev".into(),
-            ],
+            Err(_) => vec!["typesafe/jev".into(), "@cf/typesafe/jev".into()],
         };
 
         let system_prompt_text = match std::env::var("JEV_SYSTEM_PROMPT") {
@@ -167,12 +161,28 @@ impl Config {
             _ => None,
         };
 
-        Self::new(model_path, bind_addr, context_size, batch_size, ubatch_size, max_queue, max_questions, n_seq_max, request_batch_size, request_batch_wait_ms, hf_download, model_identity, valid_model_aliases, system_prompt_text)
+        Self::new(
+            model_path,
+            bind_addr,
+            context_size,
+            batch_size,
+            ubatch_size,
+            max_queue,
+            max_questions,
+            n_seq_max,
+            request_batch_size,
+            request_batch_wait_ms,
+            hf_download,
+            model_identity,
+            valid_model_aliases,
+            system_prompt_text,
+        )
     }
 
     /// Create a new config, validating numeric constraints.
     ///
     /// Returns an error if `batch_size`, `max_queue`, or `max_questions` is zero.
+    #[allow(clippy::too_many_arguments)] // Keep the existing public constructor compatible.
     pub fn new(
         model_path: String,
         bind_addr: SocketAddr,
@@ -235,6 +245,9 @@ impl Config {
         // Return borrowed str slices; the owned Vec stored on self is the
         // canonical set, but callers expect `&[&str]`.  Cloning into a
         // temporary Vec of &str is okay because it is called once at startup.
-        self.valid_model_aliases.iter().map(String::as_str).collect()
+        self.valid_model_aliases
+            .iter()
+            .map(String::as_str)
+            .collect()
     }
 }

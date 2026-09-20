@@ -3,12 +3,36 @@
 A Jev-compatible constrained-classification HTTP server backed by llama.cpp.
 The model is loaded once at startup and all requests are sent to a resident
 inference worker. Each question within a request is evaluated independently
-(the previous shared-prefix KV-cache optimisation was removed because it did
-not produce equivalent results on some architectures).
+with candidate-prefix sharing within questions and optional cross-request batching.
 
-Any GGUF model can be used — set `JEV_HF_REPO` and `JEV_HF_FILENAME` to
+Compatible GGUF models can be used — set `JEV_HF_REPO` and `JEV_HF_FILENAME` to
 auto-download from Hugging Face, or point `JEV_MODEL_PATH` at an existing
-GGUF file. The default is Granite 4.2 3B.
+GGUF file. The default configuration selects Qwen3 4B Instruct Q4_K_M.
+The tokenizer must support the single-token true/false continuations checked at
+startup. Architecture/backend compatibility and classification quality must be
+validated per model; GGUF format alone does not guarantee compatibility.
+
+## Setup and project status
+
+Experimental research software, not an exact TypeSafe replacement. See
+[LICENSE](LICENSE) for the MIT license, [ATTRIBUTION.md](ATTRIBUTION.md) for attribution, and
+[SECURITY.md](SECURITY.md) before exposing the server to remote clients.
+
+Use a current stable Rust toolchain (tested locally with 1.97.1), CMake, a C/C++
+compiler, Clang/libclang, and Python 3.14 for the pinned benchmark environment.
+The default Rust build enables CUDA and needs an installed CUDA toolkit and
+compatible NVIDIA driver. For a CPU-only build:
+
+```sh
+cargo build --locked --release --no-default-features
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r benchmarks/requirements.txt -r tests/requirements.txt
+JEV_MODEL_PATH=./models/your-model.gguf cargo run --locked --release --no-default-features
+```
+
+An explicit model path avoids automatic downloads. A clean-checkout automatic
+download and GPU smoke test remain release checks; neither runs in CPU CI.
 
 This reproduces Jev's public request and response shapes; it is not TypeSafe's
 proprietary model or calibration method. Probabilities are a softmax over only
@@ -22,7 +46,8 @@ Queued single-question requests use independent candidate sequence IDs.
 `JEV_REQUEST_BATCH_SIZE` defaults to `1` (the individual baseline), and
 `JEV_REQUEST_BATCH_WAIT_MS` defaults to `2`.
 Requests are grouped into waves constrained by `JEV_N_SEQ_MAX` and the context
-token budget; the default 16 sequences fits four 4-choice requests per wave.
+token budget; the default 16 sequences fits four 4-choice requests by sequence
+count (the request-batch limit and context budget may reduce this).
 Multi-question requests retain individual evaluation. Disconnected queued
 callers are skipped. A decode failure fails the affected wave, while validation
 errors are handled per request. This is bounded microbatching, not continuous
@@ -68,6 +93,14 @@ On first start the default GGUF is downloaded to `models/`. Configuration:
 - `JEV_MODEL_IDENTITY` — model string returned in API responses, default `diy-jev-0.1.0`
 - `JEV_MODEL_ALIASES` — comma-separated accepted model aliases
 - `JEV_CONTEXT_SIZE` — llama.cpp context size, default `32768`
+- `JEV_BATCH_SIZE` — logical token batch size, default `8192`
+- `JEV_UBATCH_SIZE` — physical microbatch size, default `512`
+- `JEV_N_SEQ_MAX` — candidate sequence capacity, default `16`
+- `JEV_MAX_QUEUE` — queued request capacity, default `64`
+- `JEV_MAX_QUESTIONS` — questions per request, default `100`
+- `JEV_REQUEST_BATCH_SIZE` — cross-request group limit, default `1` (disabled)
+- `JEV_REQUEST_BATCH_WAIT_MS` — gathering window, default `2` ms
+- `JEV_SYSTEM_PROMPT` — optional custom instruction text applied to both verifier and Noul prompts
 - `RUST_LOG` — log filter
 
 ## API
@@ -132,7 +165,8 @@ actually loaded backend (default `diy-jev-0.1.0`, overridable via
 
 ### Confidence and usage accounting
 
-Confidence is the **maximum softmax probability** among the legal answer tokens.
+Confidence is the **maximum softmax probability** over candidate verification
+scores (each candidate's true-versus-false log-odds), not answer-label token logits.
 It is a local per-response statistic, not a calibrated probability of correctness
 or an ensemble-derived uncertainty score. The upstream TypeSafe service computes
 confidence differently (distribution-derived); this local statistic is clearly
@@ -206,7 +240,7 @@ python3 benchmarks/benchmark.py prepare radar benchmarks/data/radar-pilot.jsonl 
   --limit 100 --seed 0
 ```
 
-Omit `--limit` for the exact full suite. That is roughly 32,000 questions and
+Omit `--limit` for the full reconstructed suite. That is roughly 32,000 questions and
 will take a long time against a serialized local server.
 
 ```sh
@@ -235,7 +269,28 @@ download or run OpenJev. OpenJev's reference accuracies and sample counts are
 copied from its published result files. Model loading and warmup are excluded
 from server latency. Pilot-subset deltas are marked as indicative because the
 published values cover the complete suite; use the full fixture for the direct
-comparison represented by the original chart.
+comparison, but equal sample counts do not establish identical data or prompts.
+
+Historical runs are retained, not certified measurements. See
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md) for exclusions and provenance gaps.
+New fixtures save dataset revisions in a sidecar manifest. New runs record the
+client commit and dependency versions; use `--provenance server-run.json` to
+attach the server's model SHA-256, commit, hardware, prompt, and configuration.
+Client environment information is not a substitute for server provenance.
+
+## Verification
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --no-default-features --all-targets -- -D warnings
+cargo test --locked --no-default-features --lib --test integration_test
+python3 tests/contract_test.py
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+These are model-free checks, not evidence of inference quality. Separately run
+`tests/http_test.py` against a live server and the opt-in model tests with
+`JEV_TEST_MODEL` set. Record backend and physical microbatch settings with results.
 
 As a sanity check, OpenJev's published full-suite top-1 values (in axis order)
 are approximately `47.15%, 27.27%, 76.85%, 59.22%, 58.56%, 31.69%, 39.20%,
