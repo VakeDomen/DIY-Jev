@@ -73,37 +73,6 @@ For unattended startup, configure either an existing `JEV_MODEL_PATH`, or both
 `JEV_HF_REPO` and `JEV_HF_FILENAME`. The server listens on
 `http://127.0.0.1:8080`.
 
-## API
-
-The TypeSafe-compatible endpoint is `POST /v1/systemone`. `/`, `/v1/evaluate`,
-and `/ai/run` accept the same body.
-
-```sh
-curl http://127.0.0.1:8080/v1/systemone \
-  -H 'content-type: application/json' \
-  -d '{
-    "state": "I ordered size 10 shoes but received size 8.",
-    "questions": {
-      "department": {
-        "type": "choice",
-        "instructions": "Which department handles this?",
-        "criteria": {
-          "returns": "Returns and exchanges",
-          "shipping": "Delivery issues",
-          "billing": "Charges and refunds"
-        }
-      },
-      "refund": {
-        "type": "noul",
-        "instructions": "Is the customer asking for a refund?"
-      }
-    }
-  }'
-```
-
-The full contract is in [openapi.yaml](openapi.yaml). `GET /health` reports the
-HTTP process and `GET /ready` reports whether the model worker is available.
-
 ## Benchmark
 
 ![Combined benchmark radar comparing DIY Jev models with published OpenJev results](benchmarks/charts/combined-radar.png)
@@ -137,6 +106,38 @@ evaluation also contains held-out decisions.
 
 Historical benchmark notes and provenance caveats are in
 [benchmarks/RESULTS.md](benchmarks/RESULTS.md).
+
+## API
+
+The TypeSafe-compatible endpoint is `POST /v1/systemone`. `/`, `/v1/evaluate`,
+and `/ai/run` accept the same body.
+
+```sh
+curl http://127.0.0.1:8080/v1/systemone \
+  -H 'content-type: application/json' \
+  -d '{
+    "state": "I ordered size 10 shoes but received size 8.",
+    "questions": {
+      "department": {
+        "type": "choice",
+        "instructions": "Which department handles this?",
+        "criteria": {
+          "returns": "Returns and exchanges",
+          "shipping": "Delivery issues",
+          "billing": "Charges and refunds"
+        }
+      },
+      "refund": {
+        "type": "noul",
+        "instructions": "Is the customer asking for a refund?"
+      }
+    }
+  }'
+```
+
+The full contract is in [openapi.yaml](openapi.yaml). `GET /health` reports the
+HTTP process and `GET /ready` reports whether the model worker is available.
+
 
 ## Notes
 
