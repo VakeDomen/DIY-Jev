@@ -40,10 +40,10 @@ impl SystemPrompt {
         let noul_text = noul_text.unwrap_or(Self::NOUL_DEFAULT).to_owned();
 
         let choice_tokens = model
-            .str_to_token(&choice_text, AddBos::Always)
+            .str_to_token(&choice_text, AddBos::Never)
             .map_err(|e| anyhow::anyhow!("failed to tokenize choice system prompt: {e}"))?;
         let noul_tokens = model
-            .str_to_token(&noul_text, AddBos::Always)
+            .str_to_token(&noul_text, AddBos::Never)
             .map_err(|e| anyhow::anyhow!("failed to tokenize noul system prompt: {e}"))?;
 
         Ok(Self {

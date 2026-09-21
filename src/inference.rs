@@ -30,13 +30,13 @@ pub fn resolve_boolean_tokens(
     let rendered = render_noul_prompt("Is this true?", "dummy");
     let system_plus_question = format!("{}{}", system.noul_text, rendered);
     let prompt_tokens = model
-        .str_to_token(&system_plus_question, AddBos::Always)
+        .str_to_token(&system_plus_question, AddBos::Never)
         .map_err(|e| InferenceError::backend(e.to_string()))?;
 
     let resolve = |answer: &str| -> Result<LlamaToken, InferenceError> {
         let full_text = format!("{system_plus_question}{answer}");
         let full_tokens = model
-            .str_to_token(&full_text, AddBos::Always)
+            .str_to_token(&full_text, AddBos::Never)
             .map_err(|e| InferenceError::backend(e.to_string()))?;
         if full_tokens.len() < prompt_tokens.len()
             || full_tokens[..prompt_tokens.len()] != prompt_tokens[..]
