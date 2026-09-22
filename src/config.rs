@@ -116,7 +116,7 @@ impl Config {
                 }
                 parsed
             }
-            Err(_) => 16,
+            Err(_) => 64,
         };
 
         let ubatch_size = match std::env::var("JEV_UBATCH_SIZE") {

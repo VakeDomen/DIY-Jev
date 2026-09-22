@@ -11,12 +11,12 @@ GSM8K distractor ordering, dataset revisions and subset selection can affect com
 
 | Model | Questions | Tasks | Micro accuracy | Macro accuracy | NLL | ECE | Requests/s | Concurrency |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| gemma-4-E4B-jev | 32235 | 9 | 60.83% | 54.99% | 0.968 | 0.029 | 26.24 | 30 |
-| qwen3.5-4b-jev | 32235 | 9 | 65.52% | 54.88% | 1.233 | 0.335 | 17.07 | 10 |
-| qwen3.6-35b-a3b-jev | 32235 | 9 | 79.94% | 70.78% | 0.695 | 0.187 | 7.74 | 30 |
-| qwen3.8-27b-jev | 32235 | 9 | 80.74% | 72.98% | 0.566 | 0.087 | 3.83 | 10 |
-| qwen3.8_27b | 32235 | 9 | 75.27% | 65.94% | 0.687 | 0.053 | 2.93 | 10 |
-| qwen3_4b | 32235 | 9 | 64.76% | 58.13% | 2.273 | 0.237 | 20.90 | 10 |
+| Qwen3.5-4B | 32235 | 9 | 65.56% | 55.36% | 1.235 | 0.337 | 15.27 | 3 |
+| Qwen3.6-35B-A3B-UD | 32235 | 9 | 79.63% | 69.55% | 0.695 | 0.183 | 7.64 | 2 |
+| systemone/Qwen3.8-27B-UD | 32235 | 9 | 80.79% | 72.89% | 0.566 | 0.089 | 3.65 | 2 |
+| systemone/gemma-4-E4B-it-Q4_K_M | 32235 | 9 | 39.78% | 35.50% | 1.378 | 0.118 | 25.38 | 3 |
+| systemone/granite-4.2-3b-Q4_K_M | 32235 | 9 | 44.50% | 39.25% | 1.247 | 0.035 | 31.94 | 5 |
+| systemone/qwen3-4b-instruct-Q4_K_M | 32235 | 9 | 65.18% | 58.93% | 0.929 | 0.080 | 28.74 | 5 |
 
 ## Charts
 
@@ -25,17 +25,13 @@ GSM8K distractor ordering, dataset revisions and subset selection can affect com
 ![calibration.png](calibration.png)
 ![latency_and_throughput.png](latency_and_throughput.png)
 
-## Excluded runs
-
-- results_granite4.2_3b: unresolved model identity
-
 ## Sources
 
-- results_gemma-4-E4B-jev/results.json
-- results_qwen3.5-4b-jev/results.json
-- results_qwen3.6-35b-a3b-jev/results.json
-- results_qwen3.8-27b-jev/results.json
-- results_qwen3.8_27b/results.json
-- results_qwen3_4b/results.json
+- results_systemone_Qwen3.5-4B/results.json
+- results_systemone_Qwen3.6-35B-A3B-UD/results.json
+- results_systemone_Qwen3.8-27B-UD/results.json
+- results_systemone_gemma-4-E4B-it-Q4_K_M/results.json
+- results_systemone_granite-4.2-3b-Q4_K_M/results.json
+- results_systemone_qwen3-4b-instruct-Q4_K_M/results.json
 - https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_all.json
 - https://huggingface.co/AlexWortega/openjev/blob/main/results/qwen4b_extra_mc.json
