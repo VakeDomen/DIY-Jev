@@ -49,6 +49,7 @@ fn shared_cache_matches_individual_inference() {
         model_identity: "test-model".into(),
         valid_model_aliases: vec!["test-model".into()],
         system_prompt_text: None,
+        backend: None,
     };
 
     let backend = init_backend().expect("failed to init llama backend");

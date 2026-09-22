@@ -1,3 +1,9 @@
+//! HTTP layer for DIY-Jev.
+//!
+//! Routes and handlers that serve the Jev-compatible API.
+
+use std::sync::Arc;
+
 use axum::{
     Json, Router,
     extract::rejection::JsonRejection,
@@ -10,9 +16,49 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 
 use crate::api::{EvaluateResponse, RequestBody};
+use crate::backend::VerdictBackend;
 use crate::config::Config;
 use crate::error::ErrorKind;
+use crate::evaluator;
 use crate::worker::{Job, WorkerHandle};
+
+// ===========================================================================
+//  Unified backend adapter
+// ===========================================================================
+
+/// Wrapper that lets the HTTP layer use either the old worker channel or
+/// the new [`VerdictBackend`] trait.
+#[derive(Clone)]
+pub enum AppBackend {
+    /// Legacy path: single dedicated llama.cpp worker thread.
+    Worker(WorkerHandle),
+    /// New path: any backend implementing VerdictBackend (llama, vllm, etc.).
+    Backend(Arc<dyn VerdictBackend>),
+}
+
+impl AppBackend {
+    /// Check if the backend is ready.
+    pub fn is_ready(&self) -> bool {
+        match self {
+            AppBackend::Worker(w) => w.is_ready(),
+            AppBackend::Backend(_) => true, // all new backends start ready
+        }
+    }
+}
+
+// Manual Debug implementation because dyn VerdictBackend is not Debug.
+impl std::fmt::Debug for AppBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppBackend::Worker(_) => f.debug_tuple("Worker").field(&"...").finish(),
+            AppBackend::Backend(_) => f.debug_tuple("Backend").field(&"...").finish(),
+        }
+    }
+}
+
+// ===========================================================================
+//  HTTP errors
+// ===========================================================================
 
 /// HTTP-layer error that directly implements `IntoResponse`.
 #[derive(Debug)]
@@ -36,14 +82,6 @@ impl IntoResponse for ApiError {
 /// Convert an Axum `JsonRejection` (malformed request body) into our typed
 /// `ApiError` so that the response always uses the `{"error": "..."}` envelope
 /// documented in openapi.yaml.
-///
-/// We delegate the HTTP status code to Axum's own mapping:
-///   - `JsonDataError`       → 422
-///   - `JsonSyntaxError`     → 400
-///   - `MissingJsonContentType` → 415
-///   - `BytesRejection`      → 413 (LengthLimitError) or 400 (UnknownBodyError)
-///
-/// The `JsonRejection` enum exposes both `status()` and `body_text()` directly.
 impl From<JsonRejection> for ApiError {
     fn from(rejection: JsonRejection) -> Self {
         let status = rejection.status();
@@ -75,8 +113,6 @@ mod tests {
 
     #[test]
     fn error_body_serializes_to_envelope() {
-        // The Error schema in openapi.yaml requires:
-        //   {"error": "..."}
         let body = ErrorBody {
             error: "something went wrong".into(),
         };
@@ -97,38 +133,14 @@ mod tests {
 
     #[test]
     fn error_kind_to_status_mapping() {
-        // Exercises the real match logic from handle_evaluate that converts
-        // ErrorKind → StatusCode.  This is not self-assigned: the expected
-        // status is hard-coded in the match arms, and we verify that each
-        // InferenceError produces the correct status.
         let cases: Vec<(ErrorKind, StatusCode, &str)> = vec![
-            (
-                ErrorKind::Validation,
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "validation",
-            ),
-            (
-                ErrorKind::Backend,
-                StatusCode::BAD_GATEWAY,
-                "backend failure",
-            ),
-            (
-                ErrorKind::Overload,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "queue full",
-            ),
-            (
-                ErrorKind::Internal,
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ),
+            (ErrorKind::Validation, StatusCode::UNPROCESSABLE_ENTITY, "validation"),
+            (ErrorKind::Backend, StatusCode::BAD_GATEWAY, "backend failure"),
+            (ErrorKind::Overload, StatusCode::SERVICE_UNAVAILABLE, "queue full"),
+            (ErrorKind::Internal, StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
         ];
         for (kind, expected_status, msg) in cases {
-            let err = InferenceError {
-                kind,
-                message: msg.into(),
-            };
-            // Replicate the match from handle_evaluate.
+            let err = InferenceError { kind, message: msg.into() };
             let got = err.map_status();
             assert_eq!(
                 got, expected_status,
@@ -138,12 +150,20 @@ mod tests {
     }
 }
 
+// ===========================================================================
+//  AppState and router
+// ===========================================================================
+
 /// Shared application state injected into every handler.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AppState {
-    pub worker: WorkerHandle,
+    pub backend: AppBackend,
     pub model_identity: String,
     pub valid_model_aliases: Vec<String>,
+    /// System prompt text for Noul questions (used by new backend path).
+    pub system_noul: String,
+    /// System prompt text for Choice/Score questions (used by new backend path).
+    pub system_choice: String,
 }
 
 /// Build the Axum router with all routes and middleware.
@@ -169,6 +189,10 @@ pub fn router(config: &Config, state: AppState) -> Router {
         })
 }
 
+// ===========================================================================
+//  Handlers
+// ===========================================================================
+
 async fn handle_evaluate(
     State(state): State<AppState>,
     body: Result<Json<RequestBody>, JsonRejection>,
@@ -188,36 +212,60 @@ async fn handle_evaluate(
             kind: ErrorKind::Validation,
         })?;
 
-    let (response_tx, response_rx) = oneshot::channel();
-    state
-        .worker
-        .inference
-        .try_send(Job {
-            request: body.into_input(),
-            response: response_tx,
-        })
-        .map_err(|_| ApiError {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            message: "inference worker is unavailable or queue is full".into(),
-            kind: ErrorKind::Overload,
-        })?;
+    let request = body.into_input();
+    let model_identity = state.model_identity.clone();
 
-    let mut inference_result = response_rx.await.map_err(|_| ApiError {
-        status: StatusCode::SERVICE_UNAVAILABLE,
-        message: "inference worker stopped".into(),
-        kind: ErrorKind::Internal,
-    })?;
+    match &state.backend {
+        AppBackend::Worker(worker) => {
+            // Legacy path: send through the worker channel.
+            let (response_tx, response_rx) = oneshot::channel();
+            worker
+                .inference
+                .try_send(Job {
+                    request,
+                    response: response_tx,
+                })
+                .map_err(|_| ApiError {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    message: "inference worker is unavailable or queue is full".into(),
+                    kind: ErrorKind::Overload,
+                })?;
 
-    // Inject the actual model identity into the response.
-    if let Ok(ref mut response) = inference_result {
-        response.model = state.model_identity.clone();
+            let mut inference_result = response_rx.await.map_err(|_| ApiError {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: "inference worker stopped".into(),
+                kind: ErrorKind::Internal,
+            })?;
+
+            if let Ok(ref mut response) = inference_result {
+                response.model = model_identity;
+            }
+
+            inference_result.map(Json).map_err(|err| ApiError {
+                status: err.map_status(),
+                message: err.message,
+                kind: err.kind,
+            })
+        }
+        AppBackend::Backend(backend) => {
+            // New path: use the evaluator + VerdictBackend.
+            let response = evaluator::evaluate_with_backend(
+                backend.as_ref(),
+                request,
+                &model_identity,
+                &state.system_noul,
+                &state.system_choice,
+            )
+            .await
+            .map(Json)
+            .map_err(|err| ApiError {
+                status: err.map_status(),
+                message: err.message,
+                kind: err.kind,
+            })?;
+            Ok(response)
+        }
     }
-
-    inference_result.map(Json).map_err(|err| ApiError {
-        status: err.map_status(),
-        message: err.message,
-        kind: err.kind,
-    })
 }
 
 #[derive(Serialize)]
@@ -236,7 +284,7 @@ async fn handle_health() -> &'static str {
 }
 
 async fn handle_ready(State(state): State<AppState>) -> Result<&'static str, ApiError> {
-    if state.worker.is_ready() {
+    if state.backend.is_ready() {
         Ok("ok")
     } else {
         Err(ApiError {

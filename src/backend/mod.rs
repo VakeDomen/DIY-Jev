@@ -47,6 +47,10 @@ use async_trait::async_trait;
 
 use crate::error::InferenceError;
 
+// Public sub-modules for direct use in main.rs etc.
+pub mod llama;
+pub mod vllm;
+
 // ---------------------------------------------------------------------------
 //  Core types
 // ---------------------------------------------------------------------------

@@ -26,7 +26,7 @@ pub struct Job {
 }
 
 /// Shared mutable state visible to the HTTP layer.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct WorkerHandle {
     pub inference: mpsc::SyncSender<Job>,
     pub worker_ready: Arc<AtomicBool>,

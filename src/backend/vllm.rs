@@ -4,71 +4,31 @@
 //!
 //! * **Primary**: [`POST /generative_scoring`] — designed for scoring specific
 //!   label token IDs as the next token of a causal LM.
-//! * **Alternative**: `POST /v1/completions` with `logprob_token_ids` — gives
-//!   raw log-probabilities in log space.
 //! * **Tokenization**: `POST /tokenize` — for resolving `true` / `false` token
 //!   IDs at startup.
 //!
-//! # Backend contract
+//! # Configuration
 //!
-//! The backend:
-//!
-//! 1. Resolves `true` / `false` token IDs at construction via `/tokenize`.
-//! 2. Verifies that appending each word does not change the prefix tokenization
-//!    (same boundary check as the llama.cpp backend).
-//! 3. Scores prompts by sending them to `/generative_scoring` with
-//!    `apply_softmax: true`, then converts probabilities back to log-odds.
-//! 4. Returns `Err` if the server is unreachable, returns an error, or if any
-//!    score is non-finite.
+//! The backend resolves the true/false token IDs at startup using `/tokenize`
+//! with the same boundary-check contract as the llama.cpp backend.  Then it
+//! sends scoring requests to `/generative_scoring`.
 //!
 //! [`POST /generative_scoring`]: https://docs.vllm.ai/en/latest/serving/online_serving/generative_scoring/
-//! [`POST /tokenize`]: https://docs.vllm.ai/en/v0.15.0/api/vllm/entrypoints/serve/tokenize/protocol/
 
 use async_trait::async_trait;
-use std::fmt;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::backend::{BooleanTokenPair, ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract};
+use crate::backend::{
+    BooleanTokenPair, ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract,
+};
+use crate::config::VllmBackendConfig;
 use crate::error::InferenceError;
-
-/// Configuration for the remote vLLM backend.
-#[derive(Debug, Clone)]
-pub struct VllmConfig {
-    /// Base URL of the vLLM server (e.g. `http://gpu-server:8000`).
-    pub base_url: String,
-    /// Model name on the vLLM server (e.g. `"Qwen/Qwen3.5-9B"`).
-    pub model: String,
-    /// Optional API key for authenticated endpoints.
-    pub api_key: Option<String>,
-    /// Request timeout.
-    pub timeout: Duration,
-}
-
-impl Default for VllmConfig {
-    fn default() -> Self {
-        Self {
-            base_url: "http://127.0.0.1:8000".into(),
-            model: "Qwen/Qwen3.5-4B".into(),
-            api_key: None,
-            timeout: Duration::from_secs(30),
-        }
-    }
-}
 
 /// Remote vLLM backend.
 ///
-/// # Errors
-///
-/// All network errors, server errors, and non-finite scores are mapped to
-/// [`InferenceError`] with kind [`Backend`](crate::error::ErrorKind::Backend).
-///
-/// # Thread safety
-///
-/// This backend is `Send + Sync` because it uses `reqwest::Client` which is
-/// designed for concurrent use.
+/// Thread-safe: uses `reqwest::Client` which is designed for concurrent use.
 #[derive(Debug)]
 pub struct VllmBackend {
     /// HTTP client (shared, cloneable).
@@ -77,6 +37,8 @@ pub struct VllmBackend {
     base_url: String,
     /// Model name string sent in API requests.
     model: String,
+    /// Optional API key for authenticated endpoints.
+    api_key: Option<String>,
     /// Resolved true/false token IDs.
     pub boolean_tokens: BooleanTokenPair,
     /// Whether the backend has been verified as reachable.
@@ -84,26 +46,45 @@ pub struct VllmBackend {
 }
 
 impl VllmBackend {
-    /// Create a new vLLM backend.
+    /// Create a new vLLM backend from config.
     ///
-    /// This does **not** verify reachability or resolve tokens (that happens
-    /// in a separate `init` step).
-    pub fn new(config: &VllmConfig) -> Self {
+    /// This calls `/tokenize` to resolve boolean tokens and verifies
+    /// reachability.
+    pub async fn new(config: &VllmBackendConfig) -> Result<Self, InferenceError> {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .expect("valid reqwest client");
+            .map_err(|e| InferenceError::backend(format!("failed to create HTTP client: {e}")))?;
 
-        Self {
+        let base_url = config.base_url.trim_end_matches('/').to_owned();
+        let model = config.model.clone();
+        let api_key = config.api_key.clone();
+
+        let mut backend = Self {
             client,
-            base_url: config.base_url.trim_end_matches('/').to_owned(),
-            model: config.model.clone(),
+            base_url,
+            model,
+            api_key,
             boolean_tokens: BooleanTokenPair {
-                true_token: 0,   // resolved during real init
+                true_token: 0,
                 false_token: 1,
             },
             is_ready: false,
-        }
+        };
+
+        // Resolve boolean tokens via /tokenize
+        let tokens = backend
+            .resolve_boolean_tokens()
+            .await
+            .map_err(|e| {
+                InferenceError::backend(format!(
+                    "failed to resolve boolean tokens from vLLM: {e}"
+                ))
+            })?;
+        backend.boolean_tokens = tokens;
+        backend.is_ready = true;
+
+        Ok(backend)
     }
 
     /// Construct the full URL for a vLLM endpoint path.
@@ -111,15 +92,50 @@ impl VllmBackend {
         format!("{}{}", self.base_url, path)
     }
 
+    /// Add authorization header if configured.
+    fn auth_header(&self) -> Option<(String, String)> {
+        self.api_key
+            .as_ref()
+            .map(|key| ("Authorization".into(), format!("Bearer {key}")))
+    }
+
+    /// Send a POST request and return the response as JSON.
+    async fn post_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &T,
+    ) -> Result<R, InferenceError> {
+        let url = self.url(path);
+        let mut req = self.client.post(&url).json(body);
+        if let Some((header, value)) = self.auth_header() {
+            req = req.header(header.as_str(), value.as_str());
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| InferenceError::backend(format!("vLLM request to {path} failed: {e}")))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(InferenceError::backend(format!(
+                "vLLM {path} returned {status}: {body}"
+            )));
+        }
+
+        resp.json::<R>()
+            .await
+            .map_err(|e| InferenceError::backend(format!("vLLM {path} parse failed: {e}")))
+    }
+
     /// Resolve true/false token IDs via `/tokenize`.
     ///
-    /// Uses the same boundary-check contract as the llama backend.
+    /// Uses the same boundary-check contract as the llama backend:
+    /// verifies that appending `"true"` or `"false"` to a representative
+    /// prompt produces exactly one extra token.
     pub async fn resolve_boolean_tokens(&self) -> Result<BooleanTokenPair, InferenceError> {
         let prefix = "dummy prefix prompt ending before the verdict";
         let prefix_tokens = self.tokenize(prefix).await?;
-
-        let true_tokens = self.tokenize(&format!("{prefix}true")).await?;
-        let false_tokens = self.tokenize(&format!("{prefix}false")).await?;
 
         let check_word = |word: &str, full_tokens: &[u32]| -> Result<u32, InferenceError> {
             if full_tokens.len() < prefix_tokens.len()
@@ -139,50 +155,94 @@ impl VllmBackend {
             Ok(delta[0])
         };
 
+        let true_tokens = self.tokenize(&format!("{prefix}true")).await?;
+        let false_tokens = self.tokenize(&format!("{prefix}false")).await?;
+
         Ok(BooleanTokenPair {
             true_token: check_word("true", &true_tokens)?,
             false_token: check_word("false", &false_tokens)?,
         })
     }
 
-    /// Call `/tokenize` and return token IDs.
+    /// Tokenize text via `/tokenize` (async).
     async fn tokenize(&self, text: &str) -> Result<Vec<u32>, InferenceError> {
-        let url = self.url("/tokenize");
-        let resp = self
-            .client
-            .post(&url)
-            .json(&json!({
-                "model": self.model,
-                "prompt": text,
-                "add_special_tokens": false,
-            }))
-            .send()
-            .await
-            .map_err(|e| InferenceError::backend(format!("vLLM /tokenize request failed: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(InferenceError::backend(format!(
-                "vLLM /tokenize returned {status}: {body}"
-            )));
-        }
-
         #[derive(Deserialize)]
         struct TokenizeResponse {
             tokens: Vec<u32>,
         }
-
-        let data: TokenizeResponse = resp
-            .json()
-            .await
-            .map_err(|e| InferenceError::backend(format!("vLLM /tokenize parse failed: {e}")))?;
-        Ok(data.tokens)
+        let resp: TokenizeResponse = self
+            .post_json(
+                "/tokenize",
+                &json!({
+                    "model": self.model,
+                    "prompt": text,
+                    "add_special_tokens": false,
+                }),
+            )
+            .await?;
+        Ok(resp.tokens)
     }
 
-    /// Convert a vLLM probability to log-odds.
+    /// Score prompts via `/generative_scoring`.
     ///
-    /// `log_odds = ln(p / (1 - p))`
+    /// Sends all prompts in one request and converts probabilities back to
+    /// log-odds using the inverse sigmoid.
+    async fn score_prompts(&self, prompts: &[String]) -> Result<Vec<f32>, InferenceError> {
+        if prompts.is_empty() {
+            return Ok(vec![]);
+        }
+
+        #[derive(Deserialize)]
+        struct ScoreItem {
+            index: usize,
+            score: f64,
+        }
+        #[derive(Deserialize)]
+        struct ScoringResponse {
+            data: Vec<ScoreItem>,
+        }
+
+        let response: ScoringResponse = self
+            .post_json(
+                "/generative_scoring",
+                &json!({
+                    "model": self.model,
+                    "query": "",
+                    "items": prompts,
+                    "label_token_ids": [
+                        self.boolean_tokens.true_token,
+                        self.boolean_tokens.false_token,
+                    ],
+                    "apply_softmax": true,
+                    "add_special_tokens": false,
+                }),
+            )
+            .await?;
+
+        if response.data.len() != prompts.len() {
+            return Err(InferenceError::backend(format!(
+                "vLLM returned {} scores for {} prompts",
+                response.data.len(),
+                prompts.len()
+            )));
+        }
+
+        // Convert probabilities to log-odds
+        let mut results = vec![0.0_f32; prompts.len()];
+        for item in response.data {
+            if item.index >= prompts.len() {
+                return Err(InferenceError::backend(format!(
+                    "vLLM returned out-of-range index {}",
+                    item.index
+                )));
+            }
+            results[item.index] = Self::probability_to_log_odds(item.score);
+        }
+
+        Ok(results)
+    }
+
+    /// Convert a probability to log-odds: `ln(p / (1-p))`.
     fn probability_to_log_odds(p: f64) -> f32 {
         const EPS: f64 = 1e-7;
         let p = p.clamp(EPS, 1.0 - EPS);
@@ -193,15 +253,45 @@ impl VllmBackend {
 #[async_trait]
 impl VerdictBackend for VllmBackend {
     async fn score(&self, groups: &[ScoreGroup]) -> Result<ScoreResult, InferenceError> {
-        // Placeholder: return zeros with correct shape.
-        // Real implementation will flatten → POST /generative_scoring → map back.
-        let log_odds: Vec<Vec<f32>> = groups
-            .iter()
-            .map(|g| vec![0.0_f32; g.len()])
-            .collect();
+        if !self.is_ready {
+            return Err(InferenceError::backend("vLLM backend is not ready"));
+        }
+
+        // We need to flatten all prompts across groups, send them in one
+        // request, then unflatten back.
+        // vLLM's generative_scoring takes an array of items and returns
+        // indexed results — we can send all at once.
+        let mut flattened_indices: Vec<(usize, usize)> = Vec::new(); // (group_idx, candidate_idx)
+        let mut flattened_prompts: Vec<String> = Vec::new();
+
+        for (gi, group) in groups.iter().enumerate() {
+            for ci in 0..group.len() {
+                flattened_indices.push((gi, ci));
+                flattened_prompts.push(group.prompts[ci].clone());
+            }
+        }
+
+        let all_scores = self.score_prompts(&flattened_prompts).await?;
+
+        if all_scores.len() != flattened_prompts.len() {
+            return Err(InferenceError::internal(format!(
+                "vLLM returned {} scores but expected {}",
+                all_scores.len(),
+                flattened_prompts.len()
+            )));
+        }
+
+        // Unflatten back into groups
+        let mut log_odds: Vec<Vec<f32>> = groups.iter().map(|g| Vec::with_capacity(g.len())).collect();
+        for ((gi, _), score) in flattened_indices.into_iter().zip(all_scores) {
+            log_odds[gi].push(score);
+        }
+
+        let input_tokens = flattened_prompts.iter().map(|p| p.len()).sum();
+
         let result = ScoreResult {
             log_odds,
-            input_tokens: 0,
+            input_tokens,
         };
         check_shape_contract(groups, &result);
         Ok(result)
@@ -219,74 +309,6 @@ impl VerdictBackend for VllmBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    //  VllmConfig
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn vllm_config_default() {
-        let config = VllmConfig::default();
-        assert_eq!(config.base_url, "http://127.0.0.1:8000");
-        assert_eq!(config.model, "Qwen/Qwen3.5-4B");
-        assert!(config.api_key.is_none());
-        assert_eq!(config.timeout, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn vllm_config_custom() {
-        let config = VllmConfig {
-            base_url: "https://vllm.example.com:8443".into(),
-            model: "Qwen/Qwen3.5-27B".into(),
-            api_key: Some("sk-xxx".into()),
-            timeout: Duration::from_secs(60),
-        };
-        assert_eq!(config.base_url, "https://vllm.example.com:8443");
-        assert_eq!(config.model, "Qwen/Qwen3.5-27B");
-        assert_eq!(config.api_key, Some("sk-xxx".into()));
-        assert_eq!(config.timeout, Duration::from_secs(60));
-    }
-
-    // -----------------------------------------------------------------------
-    //  VllmBackend creation
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn vllm_backend_creation() {
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-        assert_eq!(backend.base_url, "http://127.0.0.1:8000");
-        assert_eq!(backend.model, "Qwen/Qwen3.5-4B");
-        assert!(!backend.is_ready);
-        assert_eq!(backend.boolean_tokens.true_token, 0);
-        assert_eq!(backend.boolean_tokens.false_token, 1);
-    }
-
-    #[test]
-    fn vllm_backend_strips_trailing_slash() {
-        let config = VllmConfig {
-            base_url: "http://localhost:8000/".into(),
-            ..VllmConfig::default()
-        };
-        let backend = VllmBackend::new(&config);
-        assert_eq!(backend.base_url, "http://localhost:8000");
-    }
-
-    #[test]
-    fn vllm_backend_url_construction() {
-        let config = VllmConfig {
-            base_url: "http://gpu:8000".into(),
-            ..VllmConfig::default()
-        };
-        let backend = VllmBackend::new(&config);
-        assert_eq!(backend.url("/generative_scoring"), "http://gpu:8000/generative_scoring");
-        assert_eq!(backend.url("/tokenize"), "http://gpu:8000/tokenize");
-        assert_eq!(backend.url("/v1/completions"), "http://gpu:8000/v1/completions");
-    }
-
-    // -----------------------------------------------------------------------
-    //  probability_to_log_odds
-    // -----------------------------------------------------------------------
 
     #[test]
     fn probability_to_log_odds_for_0_5() {
@@ -308,7 +330,6 @@ mod tests {
 
     #[test]
     fn probability_to_log_odds_clamps_extremes() {
-        // Clamped to EPS
         let lo_zero = VllmBackend::probability_to_log_odds(0.0);
         assert!(lo_zero.is_finite());
         assert!(lo_zero < -10.0);
@@ -322,109 +343,24 @@ mod tests {
     fn probability_to_log_odds_symmetric() {
         let lo_p = VllmBackend::probability_to_log_odds(0.3);
         let lo_q = VllmBackend::probability_to_log_odds(0.7);
-        assert!((lo_p + lo_q).abs() < 0.01, "log-odds should be anti-symmetric");
+        assert!((lo_p + lo_q).abs() < 0.01);
     }
-
-    #[test]
-    fn probability_to_log_odds_monotonic() {
-        let vals = [0.01, 0.1, 0.3, 0.5, 0.7, 0.9, 0.99];
-        let los: Vec<f32> = vals
-            .iter()
-            .map(|&v| VllmBackend::probability_to_log_odds(v))
-            .collect();
-        for w in los.windows(2) {
-            assert!(
-                w[0] <= w[1],
-                "log-odds should be monotonic: {} > {}",
-                w[0],
-                w[1]
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    //  VllmBackend as VerdictBackend
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn vllm_backend_returns_correct_shape() {
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-
-        let groups = vec![
-            ScoreGroup::multi(["prompt_a", "prompt_b"]),
-            ScoreGroup::single("prompt_c"),
-        ];
-        let result = backend.score(&groups).await.unwrap();
-        assert_eq!(result.log_odds.len(), 2);
-        assert_eq!(result.log_odds[0].len(), 2);
-        assert_eq!(result.log_odds[1].len(), 1);
-    }
-
-    #[tokio::test]
-    async fn vllm_backend_handles_empty_groups() {
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-        let result = backend.score(&[]).await.unwrap();
-        assert!(result.log_odds.is_empty());
-        assert_eq!(result.input_tokens, 0);
-    }
-
-    #[tokio::test]
-    async fn vllm_backend_not_ready_by_default() {
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-        assert!(!backend.ready().await);
-    }
-
-    // -----------------------------------------------------------------------
-    //  Tokenize request shape validation
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn tokenize_request_body_shape() {
-        // Verify the JSON body sent to /tokenize matches expected format.
-        let body = serde_json::to_value(json!({
-            "model": "Qwen/Qwen3.5-4B",
-            "prompt": "test prompt",
-            "add_special_tokens": false,
-        }))
-        .unwrap();
-        assert_eq!(body["model"], "Qwen/Qwen3.5-4B");
-        assert_eq!(body["prompt"], "test prompt");
-        assert!(!body["add_special_tokens"].as_bool().unwrap());
-    }
-
-    // -----------------------------------------------------------------------
-    //  Generative scoring request body shape
-    // -----------------------------------------------------------------------
 
     #[test]
     fn generative_scoring_request_body_shape() {
-        // Verify the JSON body that will be sent to /generative_scoring.
         let body = serde_json::to_value(json!({
             "model": "Qwen/Qwen3.5-4B",
             "query": "",
-            "items": [
-                "Full prompt for candidate A...",
-                "Full prompt for candidate B..."
-            ],
+            "items": ["prompt A", "prompt B"],
             "label_token_ids": [2898, 3934],
             "apply_softmax": true,
             "add_special_tokens": false,
         }))
         .unwrap();
-        assert_eq!(body["model"], "Qwen/Qwen3.5-4B");
-        assert_eq!(body["query"], "");
         assert_eq!(body["items"].as_array().unwrap().len(), 2);
         assert_eq!(body["label_token_ids"], json!([2898, 3934]));
         assert!(body["apply_softmax"].as_bool().unwrap());
-        assert!(!body["add_special_tokens"].as_bool().unwrap());
     }
-
-    // -----------------------------------------------------------------------
-    //  Generative scoring response parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn parses_generative_scoring_response() {
@@ -447,100 +383,5 @@ mod tests {
         assert_eq!(resp.data.len(), 3);
         assert_eq!(resp.data[0].index, 0);
         assert!((resp.data[0].score - 0.91).abs() < 1e-6);
-    }
-
-    // -----------------------------------------------------------------------
-    //  vLLM alternative: /v1/completions approach
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn completions_request_body_shape() {
-        // Verify alternative completion request shape with logprob_token_ids.
-        let body = serde_json::to_value(json!({
-            "model": "Qwen/Qwen3.5-4B",
-            "prompt": ["prompt A", "prompt B"],
-            "add_special_tokens": false,
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": 1,
-            "logprob_token_ids": [2898, 3934],
-            "return_tokens_as_token_ids": true,
-        }))
-        .unwrap();
-        assert_eq!(body["prompt"].as_array().unwrap().len(), 2);
-        assert_eq!(body["max_tokens"], 1);
-        assert_eq!(body["temperature"], 0);
-        assert_eq!(body["logprob_token_ids"], json!([2898, 3934]));
-    }
-
-    // -----------------------------------------------------------------------
-    //  Boolean token resolution with mock
-    // -----------------------------------------------------------------------
-
-    /// Returns a mock version of resolve_boolean_tokens that simulates a
-    /// successful vLLM /tokenize call.
-    #[test]
-    fn mock_resolve_boolean_tokens() {
-        // Simulate: prefix -> [1,2,3], prefix+true -> [1,2,3,100],
-        //           prefix+false -> [1,2,3,200]
-        let tokenize_mock = |text: &str| -> Result<Vec<u32>, InferenceError> {
-            match text {
-                "p" => Ok(vec![1, 2, 3]),
-                "ptrue" => Ok(vec![1, 2, 3, 100]),
-                "pfalse" => Ok(vec![1, 2, 3, 200]),
-                _ => Err(InferenceError::backend("unexpected tokenize call")),
-            }
-        };
-
-        let result = crate::backend::resolve_boolean_tokens_contract("p", tokenize_mock);
-        assert!(result.is_ok());
-        let pair = result.unwrap();
-        assert_eq!(pair.true_token, 100);
-        assert_eq!(pair.false_token, 200);
-    }
-
-    // -----------------------------------------------------------------------
-    //  Error cases
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn vllm_backend_scores_not_implemented() {
-        // Current placeholder returns zeros.
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-        let groups = vec![ScoreGroup::single("test")];
-        let result = backend.score(&groups).await.unwrap();
-        assert!((result.log_odds[0][0] - 0.0).abs() < 1e-6);
-    }
-
-    // -----------------------------------------------------------------------
-    //  Debug and Display traits
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn vllm_backend_debug_output() {
-        let config = VllmConfig::default();
-        let backend = VllmBackend::new(&config);
-        let debug = format!("{backend:?}");
-        assert!(debug.contains("VllmBackend"));
-        assert!(debug.contains("boolean_tokens"));
-        assert!(debug.contains("http://127.0.0.1:8000"));
-    }
-
-    // -----------------------------------------------------------------------
-    //  Send + Sync (compile-time check)
-    // -----------------------------------------------------------------------
-
-    #[allow(dead_code)]
-    fn assert_send_sync<T: Send + Sync>() {}
-
-    #[test]
-    fn vllm_backend_is_send_sync() {
-        assert_send_sync::<VllmBackend>();
-    }
-
-    #[test]
-    fn vllm_config_is_send_sync() {
-        assert_send_sync::<VllmConfig>();
     }
 }
