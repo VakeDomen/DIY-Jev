@@ -33,7 +33,7 @@ pub mod worker;
 
 pub use api::{Answer, EvaluateRequest, EvaluateResponse, Question, RequestBody, Usage};
 pub use backend::{llama::LlamaBackend, vllm::VllmBackend};
-pub use config::{BackendConfig, BackendKind, Config, VllmBackendConfig, resolve_backend_kind, backend_config_from_env};
+pub use config::{BackendConfig, BackendKind, Cli, Config, VllmBackendConfig, resolve_backend_kind, backend_config_from_env};
 pub use error::{ErrorKind, InferenceError};
 pub use evaluator::QuestionKind;
 pub use http::ApiError;

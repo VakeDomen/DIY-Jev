@@ -3,7 +3,101 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 
+use clap::Parser;
+
 use crate::download::{HfDownloadConfig, select_model_interactively};
+
+// ===========================================================================
+//  CLI argument parsing (clap)
+// ===========================================================================
+
+/// DIY-Jev command-line arguments.
+///
+/// Every flag also has an equivalent `JEV_*` environment variable.
+/// CLI flags take precedence over environment variables.
+#[derive(Parser, Debug, Clone)]
+#[command(name = "diy-jev", version, about = "Jev-compatible decision server")]
+pub struct Cli {
+    /// Inference backend: "llama" or "vllm".
+    ///
+    /// When unset, falls back to `JEV_BACKEND` env var, and if that is also
+    /// unset, enters interactive model selection (the original behavior).
+    #[arg(long, value_name = "BACKEND")]
+    pub backend: Option<String>,
+
+    /// Model path (for llama) or Hugging Face model name (for vLLM).
+    #[arg(long, env = "JEV_MODEL")]
+    pub model: Option<String>,
+
+    /// Base URL of the remote vLLM server (only meaningful with vLLM backend).
+    #[arg(long, env = "JEV_VLLM_URL")]
+    pub url: Option<String>,
+
+    /// Optional API key for authenticated vLLM endpoints.
+    ///
+    /// Can also be set via `JEV_VLLM_API_KEY`. Prefer environment variables
+    /// in shared/CI environments, but explicit CLI is accepted for convenience.
+    #[arg(long, env = "JEV_VLLM_API_KEY")]
+    pub api_key: Option<String>,
+
+    /// Address to bind the HTTP server.
+    #[arg(long, env = "JEV_BIND_ADDR", default_value = "127.0.0.1:8080")]
+    pub bind: SocketAddr,
+
+    /// Custom system prompt text.
+    #[arg(long, env = "JEV_SYSTEM_PROMPT")]
+    pub system_prompt: Option<String>,
+
+    // ---- llama-specific flags ----
+
+    /// Context size (llama.cpp only).
+    #[arg(long, env = "JEV_CONTEXT_SIZE")]
+    pub context_size: Option<u32>,
+
+    /// Batch size (llama.cpp only).
+    #[arg(long, env = "JEV_BATCH_SIZE")]
+    pub batch_size: Option<u32>,
+
+    /// Microbatch size (llama.cpp only).
+    #[arg(long, env = "JEV_UBATCH_SIZE")]
+    pub ubatch_size: Option<u32>,
+
+    /// Maximum parallel sequences (llama.cpp only).
+    #[arg(long, env = "JEV_N_SEQ_MAX")]
+    pub n_seq_max: Option<u32>,
+
+    /// Maximum queue depth.
+    #[arg(long, env = "JEV_MAX_QUEUE")]
+    pub max_queue: Option<usize>,
+
+    /// Maximum number of questions per request.
+    #[arg(long, env = "JEV_MAX_QUESTIONS")]
+    pub max_questions: Option<usize>,
+
+    /// Request batch size.
+    #[arg(long, env = "JEV_REQUEST_BATCH_SIZE")]
+    pub request_batch_size: Option<usize>,
+
+    /// Request batch wait in ms.
+    #[arg(long, env = "JEV_REQUEST_BATCH_WAIT_MS")]
+    pub request_batch_wait_ms: Option<u64>,
+
+    /// Model identity string returned in API responses.
+    #[arg(long, env = "JEV_MODEL_IDENTITY")]
+    pub model_identity: Option<String>,
+
+    /// Comma-separated model aliases.
+    #[arg(long, env = "JEV_MODEL_ALIASES")]
+    pub model_aliases: Option<String>,
+
+    /// Hugging Face repo to download from (e.g. "VakeDomen/Qwen3.5-4B").
+    #[arg(long, env = "JEV_HF_REPO")]
+    pub hf_repo: Option<String>,
+
+    /// Hugging Face filename to download (e.g. "qwen3-4b-instruct-Q4_K_M.gguf").
+    #[arg(long, env = "JEV_HF_FILENAME")]
+    pub hf_filename: Option<String>,
+}
 
 // ===========================================================================
 //  Backend selection
@@ -52,8 +146,10 @@ pub struct VllmBackendConfig {
     /// Model name on the vLLM server (e.g. `"Qwen/Qwen3.5-9B"`).
     pub model: String,
     /// Optional API key for authenticated endpoints.
-    /// NOTE: this should only be set via JEV_VLLM_API_KEY env var,
-    /// never from the command line (avoid shell history exposure).
+    ///
+    /// Accepted from both `JEV_VLLM_API_KEY` env var and `--api-key` CLI arg.
+    /// Prefer environment variables in shared/CI environments to avoid shell
+    /// history exposure, but CLI is accepted for convenience.
     pub api_key: Option<String>,
     /// Request timeout.
     pub timeout: Duration,
@@ -363,6 +459,227 @@ impl Config {
         Ok(config)
     }
 
+    /// Load configuration from CLI args and environment variables.
+    ///
+    /// CLI flags take precedence over environment variables. If neither CLI
+    /// nor environment specifies a backend, enters interactive model selection.
+    pub fn from_cli_or_env(cli: Cli) -> Result<Self> {
+        // Determine backend kind: CLI > env > interactive
+        let backend_str = cli.backend.clone()
+            .or_else(|| std::env::var("JEV_BACKEND").ok());
+
+        // Check if we have an explicit model source
+        let model_path_set = cli.model.is_some()
+            || std::env::var_os("JEV_MODEL_PATH").is_some()
+            || std::env::var_os("JEV_HF_REPO").is_some()
+            || cli.hf_repo.is_some();
+        let hf_repo = cli.hf_repo
+            .clone()
+            .or_else(|| std::env::var("JEV_HF_REPO").ok());
+        let hf_filename = cli.hf_filename
+            .clone()
+            .or_else(|| std::env::var("JEV_HF_FILENAME").ok());
+        let hf_configured = hf_repo.is_some() || hf_filename.is_some();
+        anyhow::ensure!(
+            hf_repo.is_some() == hf_filename.is_some(),
+            "set both JEV_HF_REPO and JEV_HF_FILENAME, or neither"
+        );
+
+        match backend_str.as_deref() {
+            Some("vllm") => {
+                // CLI > env for vLLM-specific settings
+                let base_url = cli.url.clone()
+                    .or_else(|| std::env::var("JEV_VLLM_URL").ok())
+                    .context("--url or JEV_VLLM_URL must be set for vLLM backend")?;
+                let model = cli.model.clone()
+                    .or_else(|| std::env::var("JEV_MODEL").ok())
+                    .or_else(|| std::env::var("JEV_VLLM_MODEL").ok())
+                    .context("--model, JEV_MODEL, or JEV_VLLM_MODEL must be set for vLLM backend")?;
+                let api_key = cli.api_key.clone()
+                    .or_else(|| std::env::var("JEV_VLLM_API_KEY").ok());
+                let timeout_secs = std::env::var("JEV_VLLM_TIMEOUT")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(30u64);
+
+                let mut config = Self::build_common(&cli)?;
+                config.backend = Some(BackendConfig::Vllm(VllmBackendConfig {
+                    base_url,
+                    model,
+                    api_key,
+                    timeout: Duration::from_secs(timeout_secs),
+                }));
+                Ok(config)
+            }
+            Some("llama") | None if model_path_set || hf_configured => {
+                // Llama with explicit model (CLI or env)
+                let model_path = cli.model.clone()
+                    .or_else(|| std::env::var("JEV_MODEL_PATH").ok())
+                    .or_else(|| hf_filename.as_ref().map(|f| format!("./models/{f}")))
+                    .unwrap_or_else(|| "./models/qwen3-4b-instruct-Q4_K_M.gguf".into());
+
+                let mut config = Self::build_common(&cli)?;
+                config.backend = Some(BackendConfig::Llama(LlamaBackendConfig {
+                    model_path,
+                    context_size: Self::resolve_nonzero(cli.context_size, "JEV_CONTEXT_SIZE", LlamaBackendConfig::DEFAULT_CONTEXT)?,
+                    batch_size: cli.batch_size
+                        .or_else(|| env_var_parse("JEV_BATCH_SIZE"))
+                        .unwrap_or(LlamaBackendConfig::DEFAULT_BATCH),
+                    ubatch_size: cli.ubatch_size
+                        .or_else(|| env_var_parse("JEV_UBATCH_SIZE"))
+                        .unwrap_or(LlamaBackendConfig::DEFAULT_UBATCH),
+                    n_seq_max: cli.n_seq_max
+                        .or_else(|| env_var_parse("JEV_N_SEQ_MAX"))
+                        .unwrap_or(LlamaBackendConfig::DEFAULT_N_SEQ_MAX),
+                }));
+                Ok(config)
+            }
+            Some("llama") | None => {
+                // Interactive: no backend specified, no model configured.
+                let mut config = Self::build_common(&cli)?;
+                let selection = select_model_interactively(std::path::Path::new("./models"))?;
+                config.model_path = selection.model_path;
+                if let Some(download) = selection.download {
+                    config.hf_download = download;
+                    config.download_model = true;
+                }
+                if cli.model_identity.is_none() && std::env::var("JEV_MODEL_IDENTITY").is_err() {
+                    config.model_identity = derive_identity_from_path(&config.model_path);
+                }
+                config.backend = None; // legacy llama path
+                Ok(config)
+            }
+            Some(other) => {
+                anyhow::bail!("unknown backend {other:?}; expected \"llama\" or \"vllm\"")
+            }
+        }
+    }
+
+    /// Build the shared part of `Config` from CLI args (with env fallbacks).
+    fn build_common(cli: &Cli) -> Result<Self> {
+        let bind_addr = cli.bind;
+
+        // Model path (used by legacy path and for identity derivation)
+        let explicit_model_path = cli.model.clone()
+            .or_else(|| std::env::var("JEV_MODEL_PATH").ok());
+        let hf_filename = cli.hf_filename.clone()
+            .or_else(|| std::env::var("JEV_HF_FILENAME").ok());
+        let hf_repo = cli.hf_repo.clone()
+            .or_else(|| std::env::var("JEV_HF_REPO").ok());
+        anyhow::ensure!(
+            hf_repo.is_some() == hf_filename.is_some(),
+            "set both JEV_HF_REPO and JEV_HF_FILENAME, or neither"
+        );
+
+        let model_path = explicit_model_path.unwrap_or_else(|| match &hf_filename {
+            Some(filename) => format!("./models/{filename}"),
+            None => "./models/qwen3-4b-instruct-Q4_K_M.gguf".to_owned(),
+        });
+
+        let context_size = Self::resolve_nonzero(
+            cli.context_size,
+            "JEV_CONTEXT_SIZE",
+            32_768,
+        )?;
+
+        let batch_size = cli.batch_size
+            .or_else(|| env_var_parse("JEV_BATCH_SIZE"))
+            .unwrap_or(8192);
+        anyhow::ensure!(batch_size > 0, "batch_size must be positive");
+
+        let ubatch_size = cli.ubatch_size
+            .or_else(|| env_var_parse("JEV_UBATCH_SIZE"))
+            .unwrap_or(512);
+
+        let max_queue = cli.max_queue
+            .or_else(|| env_var_parse("JEV_MAX_QUEUE"))
+            .unwrap_or(64);
+        anyhow::ensure!(max_queue > 0, "max_queue must be positive");
+
+        let max_questions = cli.max_questions
+            .or_else(|| env_var_parse("JEV_MAX_QUESTIONS"))
+            .unwrap_or(100);
+        anyhow::ensure!(max_questions > 0, "max_questions must be positive");
+
+        let n_seq_max = cli.n_seq_max
+            .or_else(|| env_var_parse("JEV_N_SEQ_MAX"))
+            .unwrap_or(64);
+        anyhow::ensure!(n_seq_max > 0, "n_seq_max must be positive");
+
+        let request_batch_size = cli.request_batch_size
+            .or_else(|| env_var_parse("JEV_REQUEST_BATCH_SIZE"))
+            .unwrap_or(3);
+        anyhow::ensure!(
+            request_batch_size > 0 && request_batch_size <= 256,
+            "request_batch_size must be 1..256"
+        );
+
+        let request_batch_wait_ms = cli.request_batch_wait_ms
+            .or_else(|| env_var_parse("JEV_REQUEST_BATCH_WAIT_MS"))
+            .unwrap_or(3);
+        anyhow::ensure!(request_batch_wait_ms <= 1000, "request_batch_wait_ms must be <= 1000");
+
+        let hf_download = HfDownloadConfig::from_env();
+
+        let model_id_cli = cli.model_identity.clone();
+        let model_id_env = std::env::var("JEV_MODEL_IDENTITY").ok();
+        let model_identity = derive_model_identity(
+            model_id_cli.as_deref().or(model_id_env.as_deref()),
+            &model_path,
+            hf_filename.as_deref(),
+        );
+
+        let valid_model_aliases: Vec<String> = match cli.model_aliases.as_deref() {
+            Some(val) => val.split(',').map(|s| s.trim().to_string()).collect(),
+            None => match std::env::var("JEV_MODEL_ALIASES") {
+                Ok(val) => val.split(',').map(|s| s.trim().to_string()).collect(),
+                Err(_) => vec!["typesafe/jev".into(), "@cf/typesafe/jev".into()],
+            },
+        };
+
+        let hf_configured = hf_repo.is_some();
+
+        let system_prompt_text = cli.system_prompt.clone()
+            .or_else(|| {
+                let env = std::env::var("JEV_SYSTEM_PROMPT").ok()?;
+                if env.is_empty() { None } else { Some(env) }
+            });
+
+        let download_model = hf_configured;
+
+        Ok(Self {
+            model_path,
+            bind_addr,
+            context_size,
+            batch_size,
+            ubatch_size,
+            max_queue,
+            max_questions,
+            n_seq_max,
+            request_batch_size,
+            request_batch_wait_ms,
+            hf_download,
+            download_model,
+            model_identity,
+            valid_model_aliases,
+            system_prompt_text,
+            backend: None,
+        })
+    }
+
+    /// Resolve a `NonZeroU32` from CLI > env > default.
+    fn resolve_nonzero(
+        cli_val: Option<u32>,
+        env_key: &str,
+        default: u32,
+    ) -> Result<NonZeroU32> {
+        let raw = cli_val
+            .or_else(|| env_var_parse(env_key))
+            .unwrap_or(default);
+        NonZeroU32::new(raw)
+            .with_context(|| format!("{env_key} must be positive, got {raw}"))
+    }
+
     /// Select a local model or ask for a Hugging Face GGUF when no model
     /// source was configured. Explicit environment configuration never prompts.
     ///
@@ -520,4 +837,10 @@ fn sanitise_model_name(raw: &str) -> String {
     } else {
         name
     }
+}
+
+/// Parse an env var value into the requested type, returning `None` if unset
+/// or if the value cannot be parsed.
+fn env_var_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
+    std::env::var(key).ok().and_then(|v| v.parse().ok())
 }

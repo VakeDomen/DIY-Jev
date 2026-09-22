@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use clap::Parser;
 
 use diy_jev::backend::{VerdictBackend, llama::LlamaBackend, vllm::VllmBackend};
-use diy_jev::config::{BackendConfig, Config};
+use diy_jev::config::{BackendConfig, Cli, Config};
 use diy_jev::download::download_model;
 use diy_jev::http::{AppBackend, AppState, router};
 
@@ -23,12 +24,14 @@ pub fn main() -> Result<()> {
     // is only one thread at this point.
     unsafe { std::env::set_var("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1") };
 
+    let cli = Cli::parse();
+
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async { run().await })
+    runtime.block_on(async { run(cli).await })
 }
 
-async fn run() -> Result<()> {
-    let config = Config::from_env_or_prompt()?;
+async fn run(cli: Cli) -> Result<()> {
+    let config = Config::from_cli_or_env(cli)?;
 
     // System prompts (same defaults as prompts.rs)
     let system_noul = config
