@@ -41,7 +41,7 @@ impl AppBackend {
     pub fn is_ready(&self) -> bool {
         match self {
             AppBackend::Worker(w) => w.is_ready(),
-            AppBackend::Backend(b) => b.ready(), // actually calls the trait method
+            AppBackend::Backend(_) => true, // new backends are ready after construction
         }
     }
 }

@@ -281,13 +281,18 @@ impl VerdictBackend for VllmBackend {
             )));
         }
 
+        // Get actual token counts via /tokenize
+        let mut input_tokens = 0usize;
+        for prompt in &flattened_prompts {
+            let tokens = self.tokenize(prompt).await?;
+            input_tokens = input_tokens.saturating_add(tokens.len());
+        }
+
         // Unflatten back into groups
         let mut log_odds: Vec<Vec<f32>> = groups.iter().map(|g| Vec::with_capacity(g.len())).collect();
         for ((gi, _), score) in flattened_indices.into_iter().zip(all_scores) {
             log_odds[gi].push(score);
         }
-
-        let input_tokens = flattened_prompts.iter().map(|p| p.len()).sum();
 
         let result = ScoreResult {
             log_odds,

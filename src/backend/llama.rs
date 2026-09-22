@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use tokio::sync::oneshot;
 
 use crate::backend::{
-    BooleanTokenPair, ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract,
+    ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract,
 };
 use crate::config::Config;
 use crate::error::InferenceError;
@@ -24,13 +24,12 @@ use crate::worker::{Job, ScoreJob, WorkerHandle};
 /// Local llama.cpp backend.
 ///
 /// Thread-safe handle that delegates scoring to a dedicated inference worker
-/// thread via the `Job::Score` variant.
+/// thread via the `Job::Score` variant. Boolean tokens are resolved inside
+/// the worker thread (see [`crate::inference::resolve_boolean_tokens`]).
 #[derive(Debug)]
 pub struct LlamaBackend {
     /// Channel to the dedicated worker thread.
     worker: WorkerHandle,
-    /// The resolved boolean token pair.
-    pub boolean_tokens: BooleanTokenPair,
 }
 
 impl LlamaBackend {
@@ -42,13 +41,7 @@ impl LlamaBackend {
         let (handle, _thread) = crate::worker::start(config.clone())
             .map_err(|e| InferenceError::backend(e.to_string()))?;
 
-        Ok(Self {
-            worker: handle,
-            boolean_tokens: BooleanTokenPair {
-                true_token: 0, // resolved lazily from the worker
-                false_token: 1,
-            },
-        })
+        Ok(Self { worker: handle })
     }
 }
 

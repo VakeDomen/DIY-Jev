@@ -956,28 +956,12 @@ pub fn evaluate(
 //  LOW-LEVEL HELPERS
 // ===========================================================================
 
-fn softmax(logits: &[f32]) -> Result<Vec<f32>, InferenceError> {
-    evaluator::softmax(logits)
-}
-
-fn argmax(values: &[f32]) -> usize {
-    evaluator::argmax(values)
-}
-
-fn sigmoid(x: f32) -> f32 {
-    evaluator::sigmoid(x)
-}
-
 fn render_state(state: &Value) -> Result<String, InferenceError> {
     evaluator::render_state(state)
 }
 
 fn options(question: &Question) -> (Vec<String>, Vec<String>) {
     evaluator::options(question)
-}
-
-fn escape_tags(text: &str) -> String {
-    evaluator::escape_tags(text)
 }
 
 fn render_noul_prompt(instructions: &str, state: &str) -> String {
@@ -1007,22 +991,22 @@ mod tests {
 
     #[test]
     fn softmax_is_normalized_and_stable() {
-        let result = softmax(&[10_000.0, 9_999.0]).unwrap();
+        let result = evaluator::softmax(&[10_000.0, 9_999.0]).unwrap();
         assert!((result.iter().sum::<f32>() - 1.0).abs() < 1e-6);
         assert!(result[0] > result[1]);
     }
 
     #[test]
     fn softmax_rejects_non_finite() {
-        assert!(softmax(&[f32::NAN, 1.0]).is_err());
-        assert!(softmax(&[f32::INFINITY, 1.0]).is_err());
-        assert!(softmax(&[f32::NEG_INFINITY, 1.0]).is_err());
+        assert!(evaluator::softmax(&[f32::NAN, 1.0]).is_err());
+        assert!(evaluator::softmax(&[f32::INFINITY, 1.0]).is_err());
+        assert!(evaluator::softmax(&[f32::NEG_INFINITY, 1.0]).is_err());
     }
 
     #[test]
     fn score_answer_is_expected_value() {
         let probs = vec![0.1, 0.2, 0.7];
-        let best = argmax(&probs);
+        let best = evaluator::argmax(&probs);
         let score: f32 = probs.iter().enumerate().map(|(i, p)| i as f32 * p).sum();
         let legend: BTreeMap<String, String> = (0..3)
             .map(|i| (i.to_string(), ["low", "medium", "high"][i].to_string()))
@@ -1052,9 +1036,9 @@ mod tests {
     #[test]
     fn sigmoid_is_symmetric() {
         for x in &[-100.0, -2.0, -0.5, 0.0, 0.5, 2.0, 100.0] {
-            let s = sigmoid(*x);
+            let s = evaluator::sigmoid(*x);
             assert!(
-                (s + sigmoid(-x) - 1.0).abs() < 1e-6,
+                (s + evaluator::sigmoid(-x) - 1.0).abs() < 1e-6,
                 "sigmoid({x}) not symmetric"
             );
         }
@@ -1062,9 +1046,9 @@ mod tests {
 
     #[test]
     fn sigmoid_edge_cases() {
-        assert!((sigmoid(100.0) - 1.0).abs() < 1e-6);
-        assert!((sigmoid(-100.0) - 0.0).abs() < 1e-6);
-        assert!((sigmoid(0.0) - 0.5).abs() < 1e-6);
+        assert!((evaluator::sigmoid(100.0) - 1.0).abs() < 1e-6);
+        assert!((evaluator::sigmoid(-100.0) - 0.0).abs() < 1e-6);
+        assert!((evaluator::sigmoid(0.0) - 0.5).abs() < 1e-6);
     }
 
     #[test]
