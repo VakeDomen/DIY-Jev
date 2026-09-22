@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::api::{Answer, EvaluateRequest, EvaluateResponse, Question, Usage};
 use crate::error::InferenceError;
+use crate::evaluator;
 use crate::prompts::SystemPrompt;
 
 // ===========================================================================
@@ -27,7 +28,7 @@ pub fn resolve_boolean_tokens(
     model: &LlamaModel,
     system: &SystemPrompt,
 ) -> Result<BooleanTokens, InferenceError> {
-    let rendered = render_noul_prompt("Is this true?", "dummy");
+    let rendered = evaluator::render_noul_prompt("Is this true?", "dummy");
     let system_plus_question = format!("{}{}", system.noul_text, rendered);
     let prompt_tokens = model
         .str_to_token(&system_plus_question, AddBos::Never)
@@ -61,7 +62,7 @@ pub fn resolve_boolean_tokens(
 }
 
 // ===========================================================================
-//  BOOLEAN LOG-ODDS
+//  BOOLEAN LOG-ODDS (llama.cpp specific — uses LlamaToken for the existing flow)
 // ===========================================================================
 
 #[inline]
@@ -77,95 +78,8 @@ fn boolean_log_odds_from_slice(
     Ok(logits[true_id] - logits[false_id])
 }
 
-#[inline]
-fn sigmoid(x: f32) -> f32 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let e = x.exp();
-        e / (1.0 + e)
-    }
-}
-
-// ===========================================================================
-//  PROMPT RENDERING
-// ===========================================================================
-
-fn render_state(state: &Value) -> Result<String, InferenceError> {
-    match state {
-        Value::String(text) => Ok(text.clone()),
-        value => serde_json::to_string_pretty(value)
-            .map_err(|e| InferenceError::internal(format!("failed to serialize state: {e}"))),
-    }
-}
-
-fn options(question: &Question) -> (Vec<String>, Vec<String>) {
-    match question {
-        Question::Noul { criteria, .. } => {
-            let labels = vec!["true".to_owned(), "false".to_owned()];
-            let descriptions = match criteria {
-                Some(criteria) => labels
-                    .iter()
-                    .map(|key| {
-                        criteria[key]
-                            .clone()
-                            .unwrap_or_else(|| if key == "true" { "Yes" } else { "No" }.into())
-                    })
-                    .collect(),
-                None => vec!["Yes".to_owned(), "No".to_owned()],
-            };
-            (labels, descriptions)
-        }
-        Question::Choice { criteria, .. } => criteria
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone().unwrap_or_else(|| key.clone())))
-            .unzip(),
-        Question::Score { criteria, .. } => (
-            (0..criteria.len()).map(|i| i.to_string()).collect(),
-            criteria.clone(),
-        ),
-    }
-}
-
-fn escape_tags(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn render_noul_prompt(instructions: &str, state: &str) -> String {
-    format!(
-        "<state>{}</state><question>{}</question><verdict>\n",
-        escape_tags(state),
-        escape_tags(instructions)
-    )
-}
-
-/// Render the shared prefix for a Choice/Score question (everything before
-/// the candidate-specific branch).
-fn render_choice_shared(
-    instructions: &str,
-    state: &str,
-    labels: &[String],
-    descriptions: &[String],
-) -> String {
-    let options: String = labels
-        .iter()
-        .zip(descriptions.iter())
-        .map(|(label, desc)| format!("{}:{}\n", escape_tags(label), escape_tags(desc)))
-        .collect();
-    format!(
-        "<state>{}</state><question>{}</question><options>\n{}</options><candidate>",
-        escape_tags(state),
-        escape_tags(instructions),
-        options
-    )
-}
-
-/// Render the per-candidate suffix (everything after the shared prefix).
-fn render_candidate_suffix(label: &str) -> String {
-    format!("{}</candidate><verdict>\n", escape_tags(label))
-}
+// Sigmoid, softmax, argmax, and prompt rendering are delegated to
+// crate::evaluator to avoid duplication across backends.
 
 // ===========================================================================
 //  PLAN — with batching info
@@ -503,12 +417,12 @@ fn run_noul(
 ) -> Result<(Answer, usize), InferenceError> {
     ctx.clear_kv_cache();
 
-    let prompt = render_noul_prompt(&plan.question.instructions_str(), &plan.state);
+    let prompt = evaluator::render_noul_prompt(&plan.question.instructions_str(), &plan.state);
     let n_tokens = prefill(model, ctx, &system.noul_tokens, &prompt)?;
 
     let logits = ctx.get_logits();
     let s = boolean_log_odds_from_slice(logits, bool_tokens)?;
-    let p = sigmoid(s);
+    let p = evaluator::sigmoid(s);
 
     Ok((Answer::Noul { noul: p }, n_tokens))
 }
@@ -524,8 +438,8 @@ fn run_choice(
         .ok_or_else(|| InferenceError::internal("choice plan missing batching info"))?;
 
     let scores = batch_score_candidates(ctx, batching, bool_tokens)?;
-    let probabilities = softmax(&scores)?;
-    let best = argmax(&probabilities);
+    let probabilities = evaluator::softmax(&scores)?;
+    let best = evaluator::argmax(&probabilities);
 
     Ok((
         Answer::Choice {
@@ -548,8 +462,8 @@ fn run_score(
         .ok_or_else(|| InferenceError::internal("score plan missing batching info"))?;
 
     let scores = batch_score_candidates(ctx, batching, bool_tokens)?;
-    let probabilities = softmax(&scores)?;
-    let best = argmax(&probabilities);
+    let probabilities = evaluator::softmax(&scores)?;
+    let best = evaluator::argmax(&probabilities);
     let score = probabilities
         .iter()
         .enumerate()
@@ -717,11 +631,11 @@ fn flush_wave(
                 let answer = (|| {
                     if matches!(plan.question, Question::Noul { .. }) {
                         return Ok(Answer::Noul {
-                            noul: sigmoid(scores[0]),
+                            noul: evaluator::sigmoid(scores[0]),
                         });
                     }
-                    let probabilities = softmax(&scores)?;
-                    let best = argmax(&probabilities);
+                    let probabilities = evaluator::softmax(&scores)?;
+                    let best = evaluator::argmax(&probabilities);
                     let confidence = probabilities[best];
                     let score = probabilities
                         .iter()
@@ -922,27 +836,44 @@ pub fn evaluate(
 // ===========================================================================
 
 fn softmax(logits: &[f32]) -> Result<Vec<f32>, InferenceError> {
-    if logits.iter().any(|&x| !x.is_finite()) {
-        return Err(InferenceError::backend(
-            "non-finite logit values encountered before softmax",
-        ));
-    }
-    let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut values = logits
-        .iter()
-        .map(|logit| (logit - max).exp())
-        .collect::<Vec<_>>();
-    let sum = values.iter().sum::<f32>();
-    values.iter_mut().for_each(|value| *value /= sum);
-    Ok(values)
+    evaluator::softmax(logits)
 }
 
 fn argmax(values: &[f32]) -> usize {
-    values
-        .iter()
-        .enumerate()
-        .max_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map_or(0, |(index, _)| index)
+    evaluator::argmax(values)
+}
+
+fn sigmoid(x: f32) -> f32 {
+    evaluator::sigmoid(x)
+}
+
+fn render_state(state: &Value) -> Result<String, InferenceError> {
+    evaluator::render_state(state)
+}
+
+fn options(question: &Question) -> (Vec<String>, Vec<String>) {
+    evaluator::options(question)
+}
+
+fn escape_tags(text: &str) -> String {
+    evaluator::escape_tags(text)
+}
+
+fn render_noul_prompt(instructions: &str, state: &str) -> String {
+    evaluator::render_noul_prompt(instructions, state)
+}
+
+fn render_choice_shared(
+    instructions: &str,
+    state: &str,
+    labels: &[String],
+    descriptions: &[String],
+) -> String {
+    evaluator::render_choice_shared(instructions, state, labels, descriptions)
+}
+
+fn render_candidate_suffix(label: &str) -> String {
+    evaluator::render_candidate_suffix(label)
 }
 
 // ===========================================================================
