@@ -160,6 +160,7 @@ pub fn router(config: &Config, state: AppState) -> Router {
         .route("/ai/run", post(handle_evaluate))
         .route("/health", get(handle_health))
         .route("/ready", get(handle_ready))
+        .route("/model", get(handle_model))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(AppState {
             model_identity: config.model_identity(),
@@ -216,6 +217,17 @@ async fn handle_evaluate(
         status: err.map_status(),
         message: err.message,
         kind: err.kind,
+    })
+}
+
+#[derive(Serialize)]
+struct ModelResponse {
+    model: String,
+}
+
+async fn handle_model(State(state): State<AppState>) -> Json<ModelResponse> {
+    Json(ModelResponse {
+        model: state.model_identity.clone(),
     })
 }
 
