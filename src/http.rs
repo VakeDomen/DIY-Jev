@@ -180,7 +180,8 @@ async fn handle_evaluate(
         .iter()
         .map(String::as_str)
         .collect();
-    body.validate_model(&aliases).map_err(|msg| ApiError {
+    body.validate_model(&state.model_identity, &aliases)
+        .map_err(|msg| ApiError {
         status: StatusCode::UNPROCESSABLE_ENTITY,
         message: msg,
         kind: ErrorKind::Validation,

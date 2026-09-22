@@ -252,6 +252,12 @@ components:
       required: [state, questions]
       additionalProperties: true
       properties:
+        model:
+          description: Optional model identifier. If provided, must match the running model (prefixed with `systemone/`).
+          oneOf:
+            - type: string
+              example: systemone/diy-jev-0.1.0
+            - type: 'null'
         state:
           description: Shared state evaluated by every question.
           type: [string, number, boolean, object, array, 'null']

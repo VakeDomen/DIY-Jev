@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, num::NonZeroU32};
+use std::{net::SocketAddr, num::NonZeroU32, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -24,6 +24,8 @@ pub struct Config {
     /// Whether startup should download `hf_download` before loading the model.
     pub download_model: bool,
     /// Identity string returned in API responses (e.g. "diy-jev-0.1.0").
+    /// This is the raw (unprefixed) identity. The public-facing identity
+    /// is obtained via `model_identity()` which adds the `systemone/` prefix.
     pub model_identity: String,
     /// Valid model aliases accepted in Cloudflare-style requests.
     pub valid_model_aliases: Vec<String>,
@@ -138,7 +140,7 @@ impl Config {
                 );
                 parsed
             }
-            Err(_) => 1,
+            Err(_) => 3,
         };
 
         let request_batch_wait_ms = match std::env::var("JEV_REQUEST_BATCH_WAIT_MS") {
@@ -149,13 +151,16 @@ impl Config {
                 anyhow::ensure!(parsed <= 1000, "JEV_REQUEST_BATCH_WAIT_MS must be <= 1000");
                 parsed
             }
-            Err(_) => 2,
+            Err(_) => 3,
         };
 
         let hf_download = HfDownloadConfig::from_env();
 
-        let model_identity =
-            std::env::var("JEV_MODEL_IDENTITY").unwrap_or_else(|_| "diy-jev-0.1.0".into());
+        let model_identity = derive_model_identity(
+            std::env::var("JEV_MODEL_IDENTITY").ok().as_deref(),
+            &model_path,
+            hf_filename.as_deref(),
+        );
 
         let valid_model_aliases = match std::env::var("JEV_MODEL_ALIASES") {
             Ok(val) => val.split(',').map(|s| s.trim().to_string()).collect(),
@@ -203,6 +208,11 @@ impl Config {
         if let Some(download) = selection.download {
             config.hf_download = download;
             config.download_model = true;
+        }
+        // When no explicit JEV_MODEL_IDENTITY was provided, derive it from
+        // the selected model filename so benchmarks produce sensible folder names.
+        if std::env::var("JEV_MODEL_IDENTITY").is_err() {
+            config.model_identity = derive_identity_from_path(&config.model_path);
         }
         Ok(config)
     }
@@ -264,9 +274,10 @@ impl Config {
         })
     }
 
-    /// Return the model identity string reported in API responses.
+    /// Return the model identity string reported in API responses,
+    /// prefixed with `systemone/`.
     pub fn model_identity(&self) -> String {
-        self.model_identity.clone()
+        format!("systemone/{}", self.model_identity)
     }
 
     /// Return the list of valid model aliases accepted in the request body.
@@ -278,5 +289,70 @@ impl Config {
             .iter()
             .map(String::as_str)
             .collect()
+    }
+}
+
+/// Derive a short model identity from an optional `JEV_MODEL_IDENTITY` override,
+/// or fall back to inferring it from the model file path.
+///
+/// * If an explicit identity is supplied, return it as-is.
+/// * If `hf_filename` is given (from `JEV_HF_FILENAME`), strip the `.gguf`
+///   extension and any trailing `-Q4_K_M`-like quantization suffix.
+/// * Otherwise extract the file stem from `model_path`.
+fn derive_model_identity(
+    explicit: Option<&str>,
+    model_path: &str,
+    hf_filename: Option<&str>,
+) -> String {
+    if let Some(id) = explicit {
+        return id.to_owned();
+    }
+    // If the user supplied JEV_HF_FILENAME, prefer that over the full path.
+    if let Some(filename) = hf_filename {
+        return sanitise_model_name(filename);
+    }
+    derive_identity_from_path(model_path)
+}
+
+/// Strip directory, `.gguf` extension and common quantization suffixes from a
+/// model filename to produce a short readable identity.
+fn derive_identity_from_path(model_path: &str) -> String {
+    let stem = Path::new(model_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model");
+    sanitise_model_name(stem)
+}
+
+/// Strip `.gguf` extension and common quantization / version suffixes from a
+/// model name to produce a short readable identity.
+fn sanitise_model_name(raw: &str) -> String {
+    let name = raw.trim_end_matches(".gguf").trim_end();
+    // Remove a trailing part that starts with a dash followed by 'q' or 'Q',
+    // then digits — this catches patterns like -Q4_K_M, -Q8_0, -q4_0, etc.
+    let name = if let Some(dash) = name.rfind('-') {
+        let suffix = &name[dash + 1..];
+        if suffix.starts_with('Q') || suffix.starts_with('q') {
+            let after_letter = &suffix[1..];
+            if after_letter
+                .chars()
+                .next()
+                .map_or(false, |c| c.is_ascii_digit())
+            {
+                &name[..dash]
+            } else {
+                name
+            }
+        } else {
+            name
+        }
+    } else {
+        name
+    };
+    let name = name.trim_end_matches('-').to_owned();
+    if name.is_empty() {
+        "model".into()
+    } else {
+        name
     }
 }

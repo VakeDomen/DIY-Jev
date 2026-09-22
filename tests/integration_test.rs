@@ -198,7 +198,7 @@ fn request_response_round_trip() {
 
     // Simulate a response
     let response = EvaluateResponse {
-        model: "diy-jev-0.1.0".into(),
+        model: "systemone/diy-jev-0.1.0".into(),
         answers: BTreeMap::from([
             (
                 "department".into(),
@@ -240,7 +240,7 @@ fn request_response_round_trip() {
     // Serialize and deserialize the response
     let response_json = serde_json::to_value(&response).unwrap();
     // Verify the JSON shape matches expectations
-    assert_eq!(response_json["model"], "diy-jev-0.1.0");
+    assert_eq!(response_json["model"], "systemone/diy-jev-0.1.0");
     assert!(response_json["answers"].is_object());
     assert_eq!(response_json["answers"]["refund"]["type"], "noul");
     assert!((response_json["answers"]["refund"]["noul"].as_f64().unwrap() - 0.92).abs() < 1e-6);
