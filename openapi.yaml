@@ -95,6 +95,13 @@ paths:
           $ref: '#/components/responses/BadGateway'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /model:
+    get:
+      operationId: getModel
+      summary: Returns the identity of the currently loaded model
+      responses:
+        '200':
+          $ref: '#/components/responses/ModelResponse'
   /health:
     get:
       operationId: health
@@ -239,6 +246,12 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/Error'
+    ModelResponse:
+      description: The identity of the currently loaded model.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ModelIdentity'
     HealthResponse:
       description: Server is live and the model has loaded.
       content:
@@ -456,6 +469,13 @@ components:
         output_tokens:
           type: integer
           minimum: 0
+    ModelIdentity:
+      type: object
+      required: [model]
+      properties:
+        model:
+          type: string
+          example: systemone/diy-jev-0.1.0
     Error:
       type: object
       required: [error]
