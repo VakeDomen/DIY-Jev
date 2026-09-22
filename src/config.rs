@@ -1,8 +1,177 @@
 use std::{net::SocketAddr, num::NonZeroU32, path::Path};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
 use crate::download::{HfDownloadConfig, select_model_interactively};
+
+// ===========================================================================
+//  Backend selection
+// ===========================================================================
+
+/// Which inference backend the server should use.
+#[derive(Debug, Clone)]
+pub enum BackendConfig {
+    /// Local llama.cpp inference.
+    Llama(LlamaBackendConfig),
+    /// Remote vLLM HTTP inference.
+    Vllm(VllmBackendConfig),
+}
+
+/// Configuration for the local llama.cpp backend.
+#[derive(Debug, Clone)]
+pub struct LlamaBackendConfig {
+    /// Path to the GGUF model file.
+    pub model_path: String,
+    /// Context size (number of KV slots).
+    pub context_size: NonZeroU32,
+    /// Batch size for prompt processing.
+    pub batch_size: u32,
+    /// Microbatch size for GPU (0 = llama.cpp default).
+    pub ubatch_size: u32,
+    /// Maximum number of parallel sequences.
+    pub n_seq_max: u32,
+}
+
+impl LlamaBackendConfig {
+    /// Default context size.
+    pub const DEFAULT_CONTEXT: u32 = 32_768;
+    /// Default batch size.
+    pub const DEFAULT_BATCH: u32 = 8192;
+    /// Default microbatch size.
+    pub const DEFAULT_UBATCH: u32 = 512;
+    /// Default max sequences.
+    pub const DEFAULT_N_SEQ_MAX: u32 = 64;
+}
+
+/// Configuration for the remote vLLM backend.
+#[derive(Debug, Clone)]
+pub struct VllmBackendConfig {
+    /// Base URL of the vLLM server (e.g. `http://gpu-server:8000`).
+    pub base_url: String,
+    /// Model name on the vLLM server (e.g. `"Qwen/Qwen3.5-9B"`).
+    pub model: String,
+    /// Optional API key for authenticated endpoints.
+    /// NOTE: this should only be set via JEV_VLLM_API_KEY env var,
+    /// never from the command line (avoid shell history exposure).
+    pub api_key: Option<String>,
+    /// Request timeout.
+    pub timeout: Duration,
+}
+
+impl Default for VllmBackendConfig {
+    fn default() -> Self {
+        Self {
+            base_url: "http://127.0.0.1:8000".into(),
+            model: "Qwen/Qwen3.5-4B".into(),
+            api_key: None,
+            timeout: Duration::from_secs(30),
+        }
+    }
+}
+
+/// Resolve the backend kind from environment variables and CLI args.
+///
+/// Resolution rules:
+/// - `JEV_BACKEND=vllm` → Vllm
+/// - `JEV_BACKEND=llama` with explicit model → Llama
+/// - `JEV_BACKEND=llama` without explicit model → Interactive (prompt for model)
+/// - No `JEV_BACKEND` with explicit model → Llama
+/// - No `JEV_BACKEND` and no model → Interactive (prompt for model)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    Llama,
+    Vllm,
+    Interactive,
+}
+
+/// Determine which backend was requested based on environment.
+///
+/// Returns `None` if the user didn't specify (interactive fallback).
+pub fn resolve_backend_kind() -> Result<Option<(BackendKind, bool)>> {
+    let env_backend = std::env::var("JEV_BACKEND").ok();
+    let has_model = std::env::var_os("JEV_MODEL_PATH").is_some()
+        || std::env::var_os("JEV_HF_REPO").is_some();
+
+    match env_backend.as_deref() {
+        Some("vllm") => Ok(Some((BackendKind::Vllm, false))),
+        Some("llama") => Ok(Some((BackendKind::Llama, has_model))),
+        Some(other) => anyhow::bail!("unknown JEV_BACKEND={other:?}; expected \"llama\" or \"vllm\""),
+        None => {
+            if has_model {
+                Ok(Some((BackendKind::Llama, true)))
+            } else {
+                Ok(None) // interactive
+            }
+        }
+    }
+}
+
+/// Build the complete [`BackendConfig`] from environment variables.
+pub fn backend_config_from_env(kind: BackendKind) -> Result<BackendConfig> {
+    match kind {
+        BackendKind::Llama => {
+            let model_path = std::env::var("JEV_MODEL_PATH").unwrap_or_else(|_| {
+                std::env::var("JEV_HF_FILENAME")
+                    .map(|f| format!("./models/{f}"))
+                    .unwrap_or_else(|_| "./models/qwen3-4b-instruct-Q4_K_M.gguf".into())
+            });
+            let context_size = match std::env::var("JEV_CONTEXT_SIZE") {
+                Ok(v) => {
+                    let p: u32 = v.parse().context("invalid JEV_CONTEXT_SIZE")?;
+                    NonZeroU32::new(p).context("JEV_CONTEXT_SIZE must be positive")?
+                }
+                Err(_) => NonZeroU32::new(LlamaBackendConfig::DEFAULT_CONTEXT).unwrap(),
+            };
+            let batch_size = std::env::var("JEV_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(LlamaBackendConfig::DEFAULT_BATCH);
+            let ubatch_size = std::env::var("JEV_UBATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(LlamaBackendConfig::DEFAULT_UBATCH);
+            let n_seq_max = std::env::var("JEV_N_SEQ_MAX")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(LlamaBackendConfig::DEFAULT_N_SEQ_MAX);
+
+            Ok(BackendConfig::Llama(LlamaBackendConfig {
+                model_path,
+                context_size,
+                batch_size,
+                ubatch_size,
+                n_seq_max,
+            }))
+        }
+        BackendKind::Vllm => {
+            let base_url = std::env::var("JEV_VLLM_URL")
+                .context("JEV_VLLM_URL must be set for vLLM backend")?;
+            let model = std::env::var("JEV_MODEL")
+                .or_else(|_| std::env::var("JEV_VLLM_MODEL"))
+                .context("JEV_MODEL (or JEV_VLLM_MODEL) must be set for vLLM backend")?;
+            let api_key = std::env::var("JEV_VLLM_API_KEY").ok();
+            let timeout_secs = std::env::var("JEV_VLLM_TIMEOUT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30u64);
+
+            Ok(BackendConfig::Vllm(VllmBackendConfig {
+                base_url,
+                model,
+                api_key,
+                timeout: Duration::from_secs(timeout_secs),
+            }))
+        }
+        BackendKind::Interactive => {
+            anyhow::bail!("interactive selection should be handled before this call")
+        }
+    }
+}
+
+// ===========================================================================
+//  Server config (existing, now includes BackendConfig)
+// ===========================================================================
 
 /// Validated server configuration.
 #[derive(Debug, Clone)]
@@ -31,6 +200,8 @@ pub struct Config {
     pub valid_model_aliases: Vec<String>,
     /// Custom system prompt text. If empty, the built-in default is used.
     pub system_prompt_text: Option<String>,
+    /// Which inference backend to use (None = legacy llama.cpp).
+    pub backend: Option<BackendConfig>,
 }
 
 impl Config {
@@ -194,14 +365,29 @@ impl Config {
 
     /// Select a local model or ask for a Hugging Face GGUF when no model
     /// source was configured. Explicit environment configuration never prompts.
+    ///
+    /// Reads `JEV_BACKEND` to decide which backend to use.
+    /// If unset and no model is configured, enters interactive selection.
     pub fn from_env_or_prompt() -> Result<Self> {
         let model_path_set = std::env::var_os("JEV_MODEL_PATH").is_some();
         let hf_repo_set = std::env::var_os("JEV_HF_REPO").is_some();
         let hf_filename_set = std::env::var_os("JEV_HF_FILENAME").is_some();
-        if model_path_set || hf_repo_set || hf_filename_set {
-            return Self::from_env();
+        let explicit = model_path_set || hf_repo_set || hf_filename_set;
+
+        // Check for vLLM backend first.
+        if std::env::var("JEV_BACKEND").as_deref() == Ok("vllm") {
+            let mut config = Self::from_env()?;
+            config.backend = Some(backend_config_from_env(BackendKind::Vllm)?);
+            return Ok(config);
         }
 
+        if explicit {
+            let mut config = Self::from_env()?;
+            config.backend = Some(backend_config_from_env(BackendKind::Llama)?);
+            return Ok(config);
+        }
+
+        // Interactive: no backend specified, no model configured.
         let mut config = Self::from_env()?;
         let selection = select_model_interactively(std::path::Path::new("./models"))?;
         config.model_path = selection.model_path;
@@ -214,6 +400,7 @@ impl Config {
         if std::env::var("JEV_MODEL_IDENTITY").is_err() {
             config.model_identity = derive_identity_from_path(&config.model_path);
         }
+        config.backend = None; // legacy llama path
         Ok(config)
     }
 
@@ -271,6 +458,7 @@ impl Config {
             model_identity,
             valid_model_aliases,
             system_prompt_text,
+            backend: None,
         })
     }
 
