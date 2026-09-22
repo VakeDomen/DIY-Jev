@@ -14,7 +14,12 @@ pub struct EvaluateRequest {
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum RequestBody {
-    Direct(EvaluateRequest),
+    Direct {
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(flatten)]
+        input: EvaluateRequest,
+    },
     Cloudflare {
         #[serde(default, rename = "model")]
         model: Option<String>,
@@ -23,27 +28,31 @@ pub enum RequestBody {
 }
 
 impl RequestBody {
-    /// Validate the model field (if present) and return the inner request.
+    /// Validate the model field (if present) against the running model identity
+    /// or an allowed alias.
     ///
     /// Returns `Err` if the model field is set to an unrecognised value.
-    pub fn validate_model(&self, allowed_aliases: &[&str]) -> Result<(), String> {
+    pub fn validate_model(
+        &self,
+        running_identity: &str,
+        allowed_aliases: &[&str],
+    ) -> Result<(), String> {
         let model = match self {
-            Self::Direct(_) => return Ok(()),
-            Self::Cloudflare { model, .. } => model.as_deref(),
+            Self::Direct { model, .. } | Self::Cloudflare { model, .. } => model.as_deref(),
         };
         match model {
             None => Ok(()),
+            Some(name) if name == running_identity => Ok(()),
             Some(name) if allowed_aliases.contains(&name) => Ok(()),
             Some(name) => Err(format!(
-                "unsupported model: {name:?}. Supported models: {}",
-                allowed_aliases.join(", ")
+                "unsupported model: {name:?}. Expected: {running_identity:?}",
             )),
         }
     }
 
     pub fn into_input(self) -> EvaluateRequest {
         match self {
-            Self::Direct(input) | Self::Cloudflare { input, .. } => input,
+            Self::Direct { input, .. } | Self::Cloudflare { input, .. } => input,
         }
     }
 }

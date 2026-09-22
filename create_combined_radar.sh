@@ -3,12 +3,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 python3 benchmarks/benchmark.py radar \
-    benchmarks/results_qwen3_4b/results.json \
-    benchmarks/results_qwen3.5-4b-jev/results.json \
-    benchmarks/results_qwen3.8_27b/results.json \
-    benchmarks/results_qwen3.6-35b-a3b-jev/results.json \
-    benchmarks/results_granite4.2_3b/results.json \
-    benchmarks/results_gemma-4-E4B-jev/results.json \
+    benchmarks/results_systemone_qwen3-4b-instruct-Q4_K_M/results.json \
+    benchmarks/results_systemone_Qwen3.5-4B/results.json \
+    benchmarks/results_systemone_Qwen3.8-27B-UD/results.json \
+    benchmarks/results_systemone_Qwen3.6-35B-A3B-UD/results.json \
+    benchmarks/results_systemone_granite-4.2-3b-Q4_K_M/results.json \
+    benchmarks/results_systemone_gemma-4-E4B-it-Q4_K_M/results.json \
     --label "Qwen3 4B" \
     --label "Qwen3.5 4B" \
     --label "Qwen3.8 27B" \
