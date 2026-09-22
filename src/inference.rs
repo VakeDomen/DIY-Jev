@@ -10,6 +10,7 @@ use llama_cpp_2::{
 use serde_json::Value;
 
 use crate::api::{Answer, EvaluateRequest, EvaluateResponse, Question, Usage};
+use crate::backend::{ScoreGroup, ScoreResult};
 use crate::error::InferenceError;
 use crate::evaluator;
 use crate::prompts::SystemPrompt;
@@ -756,6 +757,126 @@ fn decode_wave_chunk(
         scores[request][candidate] = value;
     }
     batch.clear();
+    Ok(())
+}
+
+/// Score raw prompt groups through llama.cpp, returning log-odds.
+///
+/// This is the bridge that lets `LlamaBackend` operate at the same `score()`
+/// abstraction level as `VllmBackend`. It receives already-rendered prompts
+/// (as `ScoreGroup`s), tokenizes them, computes `logit(true) - logit(false)`
+/// for each prompt, and returns the result.
+///
+/// Each `ScoreGroup` corresponds to one Jev question. For Noul, the group has
+/// one prompt. For Choice/Score, the group has one prompt per candidate.
+pub fn score_groups(
+    model: &LlamaModel,
+    ctx: &mut LlamaContext<'_>,
+    _system: &SystemPrompt,
+    bool_tokens: &BooleanTokens,
+    groups: &[ScoreGroup],
+    max_questions: usize,
+) -> Result<ScoreResult, InferenceError> {
+    if groups.is_empty() {
+        return Ok(ScoreResult {
+            log_odds: vec![],
+            input_tokens: 0,
+        });
+    }
+    if groups.len() > max_questions {
+        return Err(InferenceError::validation(format!(
+            "too many questions: {} (max {max_questions})",
+            groups.len()
+        )));
+    }
+
+    let mut log_odds = Vec::with_capacity(groups.len());
+    let mut total_input_tokens = 0usize;
+
+    for group in groups {
+        if group.is_empty() {
+            log_odds.push(vec![]);
+            continue;
+        }
+
+        // Tokenize each prompt fully.
+        let mut all_tokenized: Vec<Vec<LlamaToken>> = Vec::with_capacity(group.len());
+        for prompt in &group.prompts {
+            let tokens = model
+                .str_to_token(prompt, AddBos::Never)
+                .map_err(|e| {
+                    InferenceError::backend(format!("tokenisation failed: {e}"))
+                })?;
+            all_tokenized.push(tokens);
+        }
+
+        // Find longest common prefix among all tokenized prompts.
+        let min_len = all_tokenized.iter().map(Vec::len).min().unwrap_or(0);
+        let mut shared_len = 0usize;
+        for i in 0..min_len {
+            let first = all_tokenized[0][i];
+            if !all_tokenized.iter().all(|t| t.len() > i && t[i] == first) {
+                break;
+            }
+            shared_len = i + 1;
+        }
+
+        // Build BatchingInfo-like structure.
+        let shared = all_tokenized[0][..shared_len].to_vec();
+        let suffixes: Vec<Vec<LlamaToken>> = all_tokenized
+            .iter()
+            .map(|t| t[shared_len..].to_vec())
+            .collect();
+
+        let total_input = shared.len() + suffixes.iter().map(Vec::len).sum::<usize>();
+
+        // Check KV span.
+        let max_suffix = suffixes.iter().map(Vec::len).max().unwrap_or(0);
+        let kv_span = shared.len() + max_suffix;
+        if kv_span >= model.n_ctx_train() as usize {
+            return Err(InferenceError::validation(format!(
+                "prompt needs {kv_span} KV slots, exceeding {} token context",
+                model.n_ctx_train()
+            )));
+        }
+
+        let batching = BatchingInfo {
+            shared,
+            suffixes,
+            total_input,
+        };
+
+        let scores = batch_score_candidates(ctx, &batching, bool_tokens)?;
+        total_input_tokens += batching.total_input;
+        log_odds.push(scores);
+    }
+
+    check_shape(groups, &log_odds)?;
+
+    Ok(ScoreResult {
+        log_odds,
+        input_tokens: total_input_tokens,
+    })
+}
+
+/// Validate that log_odds shape matches group shape.
+fn check_shape(groups: &[ScoreGroup], log_odds: &[Vec<f32>]) -> Result<(), InferenceError> {
+    if groups.len() != log_odds.len() {
+        return Err(InferenceError::internal(format!(
+            "group count mismatch: {} groups vs {} log_odds",
+            groups.len(),
+            log_odds.len()
+        )));
+    }
+    for (gi, group) in groups.iter().enumerate() {
+        if group.len() != log_odds[gi].len() {
+            return Err(InferenceError::internal(format!(
+                "group {gi} size mismatch: {} prompts vs {} scores",
+                group.len(),
+                log_odds[gi].len()
+            )));
+        }
+    }
     Ok(())
 }
 

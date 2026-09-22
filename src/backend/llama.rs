@@ -6,20 +6,25 @@
 //! Because llama.cpp contexts are not thread-safe, this backend communicates
 //! with a dedicated worker thread through a channel, exactly like the existing
 //! [`crate::worker`] architecture.
+//!
+//! Scoring is done via the `ScoreJob` variant of the worker message, which
+//! operates at the same level of abstraction as [`VllmBackend`]: it receives
+//! raw prompt strings and returns log-odds.
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 use crate::backend::{
     BooleanTokenPair, ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract,
 };
 use crate::config::Config;
 use crate::error::InferenceError;
-use crate::worker::WorkerHandle;
+use crate::worker::{Job, ScoreJob, WorkerHandle};
 
 /// Local llama.cpp backend.
 ///
 /// Thread-safe handle that delegates scoring to a dedicated inference worker
-/// thread via a channel.
+/// thread via the `Job::Score` variant.
 #[derive(Debug)]
 pub struct LlamaBackend {
     /// Channel to the dedicated worker thread.
@@ -50,47 +55,28 @@ impl LlamaBackend {
 #[async_trait]
 impl VerdictBackend for LlamaBackend {
     async fn score(&self, groups: &[ScoreGroup]) -> Result<ScoreResult, InferenceError> {
-        // Flatten all prompts into one request per group.
-        // The current worker path only supports a single EvaluateRequest at a time
-        // with an `evaluate` call. We convert each ScoreGroup into a one-question
-        // request and send them sequentially through the channel.
-        //
-        // In the future, this can be optimised with evaluate_many.
+        let (response_tx, response_rx) = oneshot::channel();
 
-        let mut log_odds = Vec::with_capacity(groups.len());
-        let total_input_tokens = 0usize;
+        self.worker
+            .inference
+            .try_send(Job::Score(ScoreJob {
+                groups: groups.to_vec(),
+                response: response_tx,
+            }))
+            .map_err(|_| {
+                InferenceError::backend("inference worker is unavailable or queue is full")
+            })?;
 
-        for group in groups {
-            if group.is_empty() {
-                log_odds.push(vec![]);
-                continue;
-            }
+        let result = response_rx.await.map_err(|_| {
+            InferenceError::backend("inference worker stopped")
+        })?;
 
-            // Each group becomes a single-request with one question.
-            // We build a minimal EvaluateRequest for each prompt.
-            // For now, fall back to the synchronous path: we create a job
-            // per group.
-            let mut group_scores = Vec::with_capacity(group.len());
-
-            for _prompt in &group.prompts {
-                // Build a virtual request.  The worker currently handles
-                // EvaluateRequest objects, so we construct minimal ones.
-                // This bridges ScoreGroup → existing evaluate().
-                //
-                // For now this is a placeholder — the actual work happens
-                // through the existing worker/evaluate path in worker.rs.
-                group_scores.push(0.0);
-            }
-
-            log_odds.push(group_scores);
+        // Validate shape contract.
+        if let Ok(ref scores) = result {
+            check_shape_contract(groups, scores);
         }
 
-        let result = ScoreResult {
-            log_odds,
-            input_tokens: total_input_tokens,
-        };
-        check_shape_contract(groups, &result);
-        Ok(result)
+        result
     }
 
     async fn ready(&self) -> bool {

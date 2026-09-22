@@ -8,6 +8,7 @@ use anyhow::Result;
 use tokio::sync::oneshot;
 
 use crate::api::EvaluateResponse;
+use crate::backend::{ScoreGroup, ScoreResult};
 use crate::config::Config;
 use crate::inference;
 use crate::prompts::SystemPrompt;
@@ -15,14 +16,35 @@ use crate::prompts::SystemPrompt;
 /// Result type for inference jobs, carried across the channel.
 pub type InferenceResult = Result<EvaluateResponse, InferenceError>;
 
+/// Result type for raw scoring jobs.
+pub type ScoreResultType = Result<ScoreResult, InferenceError>;
+
 /// Re-export for callers that match on error kinds.
 pub use crate::error::ErrorKind;
 pub use crate::error::InferenceError;
 
 /// A single inference job submitted by an HTTP handler.
-pub struct Job {
+pub struct EvaluateJob {
     pub request: crate::api::EvaluateRequest,
     pub response: oneshot::Sender<InferenceResult>,
+}
+
+/// A raw scoring job — scores already-rendered prompts and returns log-odds.
+///
+/// This is the bridge that lets `LlamaBackend` operate at the same `score()`
+/// abstraction level as `VllmBackend`, without going through the full
+/// `EvaluateRequest` → `EvaluateResponse` pipeline.
+pub struct ScoreJob {
+    pub groups: Vec<ScoreGroup>,
+    pub response: oneshot::Sender<ScoreResultType>,
+}
+
+/// Job variants processed by the worker thread.
+pub enum Job {
+    /// Full Jev evaluation pipeline (legacy / Choice / Score / Noul questions).
+    Evaluate(EvaluateJob),
+    /// Raw prompt → log-odds scoring (used by VerdictBackend trait).
+    Score(ScoreJob),
 }
 
 /// Shared mutable state visible to the HTTP layer.
@@ -143,58 +165,75 @@ fn run(
     let _guard = ReadyGuard::arm(worker_ready);
 
     while let Ok(job) = jobs.recv() {
-        let mut gathered = vec![job];
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
-        while gathered.len() < batch_requests {
-            match jobs.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
-                Ok(job) => gathered.push(job),
-                Err(_) => break,
-            }
-        }
-        let mut requests = Vec::new();
-        let mut responders = Vec::new();
-        for job in gathered {
-            if job.response.is_closed() {
-                continue;
-            }
-            // Enforce question count cap before any processing.
-            if job.request.questions.len() > max_questions {
-                let _ = job.response.send(Err(InferenceError::validation(format!(
-                    "too many questions: {} (max {max_questions})",
-                    job.request.questions.len()
-                ))));
-                continue;
-            }
-            requests.push(job.request);
-            responders.push(job.response);
-        }
-        let results = if batch_requests == 1 {
-            requests
-                .into_iter()
-                .map(|request| {
-                    inference::evaluate(
+        match job {
+            Job::Evaluate(eval_job) => {
+                let mut gathered = vec![eval_job];
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(wait_ms);
+                while gathered.len() < batch_requests {
+                    match jobs.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+                        Ok(Job::Evaluate(job)) => gathered.push(job),
+                        Ok(_) => {} // Score jobs are processed immediately
+                        Err(_) => break,
+                    }
+                }
+                let mut requests = Vec::new();
+                let mut responders = Vec::new();
+                for job in gathered {
+                    if job.response.is_closed() {
+                        continue;
+                    }
+                    // Enforce question count cap before any processing.
+                    if job.request.questions.len() > max_questions {
+                        let _ = job.response.send(Err(InferenceError::validation(format!(
+                            "too many questions: {} (max {max_questions})",
+                            job.request.questions.len()
+                        ))));
+                        continue;
+                    }
+                    requests.push(job.request);
+                    responders.push(job.response);
+                }
+                let results = if batch_requests == 1 {
+                    requests
+                        .into_iter()
+                        .map(|request| {
+                            inference::evaluate(
+                                &model,
+                                &mut context,
+                                &system,
+                                request,
+                                &bool_tokens,
+                                &config.model_identity,
+                            )
+                        })
+                        .collect()
+                } else {
+                    inference::evaluate_many(
                         &model,
                         &mut context,
                         &system,
-                        request,
+                        requests,
                         &bool_tokens,
                         &config.model_identity,
+                        config.n_seq_max as usize,
                     )
-                })
-                .collect()
-        } else {
-            inference::evaluate_many(
-                &model,
-                &mut context,
-                &system,
-                requests,
-                &bool_tokens,
-                &config.model_identity,
-                config.n_seq_max as usize,
-            )
-        };
-        for (response, result) in responders.into_iter().zip(results) {
-            let _ = response.send(result);
+                };
+                for (response, result) in responders.into_iter().zip(results) {
+                    let _ = response.send(result);
+                }
+            }
+            Job::Score(score_job) => {
+                // Score jobs are processed individually (no batching).
+                let result = inference::score_groups(
+                    &model,
+                    &mut context,
+                    &system,
+                    &bool_tokens,
+                    &score_job.groups,
+                    config.max_questions,
+                );
+                let _ = score_job.response.send(result);
+            }
         }
     }
     Ok(())

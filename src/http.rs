@@ -20,7 +20,7 @@ use crate::backend::VerdictBackend;
 use crate::config::Config;
 use crate::error::ErrorKind;
 use crate::evaluator;
-use crate::worker::{Job, WorkerHandle};
+use crate::worker::{EvaluateJob, Job, WorkerHandle};
 
 // ===========================================================================
 //  Unified backend adapter
@@ -41,7 +41,7 @@ impl AppBackend {
     pub fn is_ready(&self) -> bool {
         match self {
             AppBackend::Worker(w) => w.is_ready(),
-            AppBackend::Backend(_) => true, // all new backends start ready
+            AppBackend::Backend(b) => b.ready(), // actually calls the trait method
         }
     }
 }
@@ -221,10 +221,10 @@ async fn handle_evaluate(
             let (response_tx, response_rx) = oneshot::channel();
             worker
                 .inference
-                .try_send(Job {
+                .try_send(Job::Evaluate(EvaluateJob {
                     request,
                     response: response_tx,
-                })
+                }))
                 .map_err(|_| ApiError {
                     status: StatusCode::SERVICE_UNAVAILABLE,
                     message: "inference worker is unavailable or queue is full".into(),
