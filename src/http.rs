@@ -183,10 +183,10 @@ async fn handle_evaluate(
         .collect();
     body.validate_model(&state.model_identity, &aliases)
         .map_err(|msg| ApiError {
-        status: StatusCode::UNPROCESSABLE_ENTITY,
-        message: msg,
-        kind: ErrorKind::Validation,
-    })?;
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            message: msg,
+            kind: ErrorKind::Validation,
+        })?;
 
     let (response_tx, response_rx) = oneshot::channel();
     state

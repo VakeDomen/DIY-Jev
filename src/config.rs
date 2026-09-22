@@ -324,32 +324,9 @@ fn derive_identity_from_path(model_path: &str) -> String {
     sanitise_model_name(stem)
 }
 
-/// Strip `.gguf` extension and common quantization / version suffixes from a
-/// model name to produce a short readable identity.
+/// Strip `.gguf` extension from a model name, preserving the full identity.
 fn sanitise_model_name(raw: &str) -> String {
-    let name = raw.trim_end_matches(".gguf").trim_end();
-    // Remove a trailing part that starts with a dash followed by 'q' or 'Q',
-    // then digits — this catches patterns like -Q4_K_M, -Q8_0, -q4_0, etc.
-    let name = if let Some(dash) = name.rfind('-') {
-        let suffix = &name[dash + 1..];
-        if suffix.starts_with('Q') || suffix.starts_with('q') {
-            let after_letter = &suffix[1..];
-            if after_letter
-                .chars()
-                .next()
-                .map_or(false, |c| c.is_ascii_digit())
-            {
-                &name[..dash]
-            } else {
-                name
-            }
-        } else {
-            name
-        }
-    } else {
-        name
-    };
-    let name = name.trim_end_matches('-').to_owned();
+    let name = raw.trim_end_matches(".gguf").trim_end().to_owned();
     if name.is_empty() {
         "model".into()
     } else {
