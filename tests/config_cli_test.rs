@@ -8,18 +8,21 @@
 //! ```text
 //! diy-jev --backend llama --model ./models/foo.gguf
 //! diy-jev --backend vllm --url http://gpu:8000 --model Qwen/Qwen3.5-9B
+//! diy-jev --backend vllm --url https://vllm.example.com --model Qwen/Qwen3.5-27B --api-key sk-secret
 //! diy-jev [no args] → interactive llama selection (current behavior)
 //! ```
 //!
 //! Environment variable equivalent:
 //! ```text
 //! JEV_BACKEND=vllm JEV_VLLM_URL=http://gpu:8000 JEV_MODEL=Qwen/Qwen3.5-9B
+//! JEV_BACKEND=vllm JEV_VLLM_URL=https://vllm.example.com JEV_MODEL=Qwen/Qwen3.5-27B JEV_VLLM_API_KEY=sk-secret
 //! ```
+//!
+//! Precedence: CLI args > environment variables > defaults.
 
 use std::collections::BTreeMap;
 
-use diy_jev::backend::{ScoreGroup, VerdictBackend};
-use diy_jev::error::InferenceError;
+use diy_jev::backend::ScoreGroup;
 
 // ===========================================================================
 //  BackendConfig enum tests
@@ -209,7 +212,7 @@ fn env_var_naming_consistency() {
     let vllm_vars = vec![
         "JEV_VLLM_URL",
         "JEV_VLLM_MODEL",
-        "JEV_VLLM_API_KEY", // Not on CLI, only env
+        "JEV_VLLM_API_KEY", // Both env var and --api-key CLI arg
     ];
 
     assert!(shared_vars.contains(&"JEV_BACKEND"));
@@ -360,20 +363,15 @@ fn config_struct_backward_compatible() {
 }
 
 // ===========================================================================
-//  API key not on CLI
+//  API key from both CLI and environment
 // ===========================================================================
 
 #[test]
-fn api_key_not_in_cli_args() {
-    // The design specifies: API keys should go through environment variables,
-    // not CLI arguments (to avoid shell history exposure).
-    // The env var JEV_VLLM_API_KEY is the designated mechanism.
+fn api_key_from_env_var() {
+    // The env var JEV_VLLM_API_KEY is a valid source for the API key.
     let env_key = "JEV_VLLM_API_KEY";
-    // Verify the convention: the env var exists and is separate from CLI args.
-    // There should be no --api-key CLI argument defined in the design.
     assert!(env_key.starts_with("JEV_"));
-    // In the actual implementation, VllmConfig.api_key should only be
-    // populated from the environment, never from a CLI flag.
+    // The config struct accepts api_key from environment.
     #[derive(Debug)]
     struct VllmConfigLocal {
         url: String,
@@ -395,6 +393,25 @@ fn api_key_not_in_cli_args() {
         api_key: Some("sk-secret".into()),
     };
     assert_eq!(config_with_key.api_key, Some("sk-secret".into()));
+}
+
+#[test]
+fn api_key_from_cli_arg() {
+    // The user explicitly requested that --api-key be accepted on the CLI
+    // alongside JEV_VLLM_API_KEY. CLI takes precedence over env.
+    let config = VllmConfig {
+        url: "http://localhost:8000".into(),
+        model: "test".into(),
+        api_key: Some("sk-cli-key".into()),
+        timeout_secs: 30,
+    };
+    assert_eq!(config.api_key, Some("sk-cli-key".into()));
+
+    // When both env and CLI are provided, CLI wins (test behavior, not struct)
+    let cli_key: Option<String> = Some("cli-key".into());
+    let env_key: Option<String> = Some("env-key".into());
+    let resolved = cli_key.or(env_key);
+    assert_eq!(resolved, Some("cli-key".into()));
 }
 
 // ===========================================================================
