@@ -11,7 +11,7 @@
 //! # Backends
 //!
 //! * [`crate::backend::llama::LlamaBackend`] — local llama.cpp inference.
-//! * [`crate::backend::vllm::VllmBackend`] — remote vLLM `generative_scoring`.
+//! * [`crate::backend::vllm::VllmBackend`] — remote vLLM via `/v1/completions`.
 //!
 //! # Contract
 //!

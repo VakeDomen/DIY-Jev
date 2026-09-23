@@ -1,19 +1,29 @@
 //! Remote vLLM backend for DIY-Jev.
 //!
-//! This backend communicates with a vLLM server via:
+//! This backend communicates with a vLLM server via its OpenAI-compatible
+//! endpoints so that it survives hosted / reverse-proxied deployments (e.g.
+//! behind a gateway that only exposes `/v1/...`):
 //!
-//! * **Primary**: [`POST /generative_scoring`] — designed for scoring specific
-//!   label token IDs as the next token of a causal LM.
-//! * **Tokenization**: `POST /tokenize` — for resolving `true` / `false` token
-//!   IDs at startup.
+//! * **Tokenization**: `POST /v1/tokenize` — for resolving `true` / `false`
+//!   token IDs at startup.
+//! * **Scoring**: `POST /v1/completions` with `max_tokens = 1` and
+//!   `logprob_token_ids = [true_id, false_id]` — the server returns the
+//!   log-probabilities of exactly those two token IDs as the next token, and
+//!   DIY-Jev scores by subtracting them directly:
+//!
+//!   ```text
+//!   log_odds = true_logprob - false_logprob
+//!   ```
+//!
+//! Subtracting the two log-probs is cleaner than vLLM's
+//! `/generative_scoring` (which returns a normalized probability that must be
+//! converted back to log-odds) and preserves the full dynamic range.
 //!
 //! # Configuration
 //!
 //! The backend resolves the true/false token IDs at startup using `/tokenize`
 //! with the same boundary-check contract as the llama.cpp backend.  Then it
-//! sends scoring requests to `/generative_scoring`.
-//!
-//! [`POST /generative_scoring`]: https://docs.vllm.ai/en/latest/serving/online_serving/generative_scoring/
+//! sends scoring requests to `/v1/completions`.
 
 use async_trait::async_trait;
 
@@ -25,6 +35,30 @@ use crate::backend::{
 };
 use crate::config::VllmBackendConfig;
 use crate::error::InferenceError;
+use std::error::Error as _;
+
+/// Classify a `reqwest` transport error into a short, human-readable summary
+/// with the underlying source chain, so that transport problems (TLS, DNS,
+/// connect, timeout) are obvious in logs instead of a bare "error sending
+/// request".
+fn describe_reqwest_error(e: &reqwest::Error) -> String {
+    let kind = if e.is_timeout() {
+        "timeout"
+    } else if e.is_connect() {
+        "connection"
+    } else if e.is_redirect() {
+        "redirect"
+    } else {
+        "transport"
+    };
+    // Include the deepest `source` (e.g. rustls / io::Error) which usually
+    // holds the specific cause (certificate issue, refused connection, ...).
+    let cause = std::iter::successors(e.source(), |&src| src.source())
+        .last()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| e.to_string());
+    format!("{kind} error: {cause}")
+}
 
 /// Remote vLLM backend.
 ///
@@ -43,6 +77,13 @@ pub struct VllmBackend {
     pub boolean_tokens: BooleanTokenPair,
     /// Whether the backend has been verified as reachable.
     pub is_ready: bool,
+}
+
+/// Log-odds scores plus the total number of prompt tokens consumed for a
+/// batch of prompts, returned by [`VllmBackend::score_prompts`].
+struct PromptScores {
+    log_odds: Vec<f32>,
+    input_tokens: usize,
 }
 
 impl VllmBackend {
@@ -113,7 +154,7 @@ impl VllmBackend {
         let resp = req
             .send()
             .await
-            .map_err(|e| InferenceError::backend(format!("vLLM request to {path} failed: {e}")))?;
+            .map_err(|e| InferenceError::backend(format!("vLLM request to {url} failed: {}", describe_reqwest_error(&e))))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -183,70 +224,116 @@ impl VllmBackend {
         Ok(resp.tokens)
     }
 
-    /// Score prompts via `/generative_scoring`.
+    /// Score prompts via `POST /v1/completions`.
     ///
-    /// Sends all prompts in one request and converts probabilities back to
-    /// log-odds using the inverse sigmoid.
-    async fn score_prompts(&self, prompts: &[String]) -> Result<Vec<f32>, InferenceError> {
+    /// Sends all prompts in one request with `logprob_token_ids` set to the
+    /// true/false token IDs and `max_tokens = 1`.  For each prompt the server
+    /// returns per-token log-probs; we look up the requested IDs in
+    /// `top_logprobs[0]` (keyed as `token_id:<id>`) and return
+    /// `true_logprob - false_logprob` directly.
+    ///
+    /// The caller supplies the true/false token IDs so this method is easy to
+    /// unit-test with a fixture (which may use any values).
+    async fn score_prompts(
+        &self,
+        prompts: &[String],
+        true_token: u32,
+        false_token: u32,
+    ) -> Result<PromptScores, InferenceError> {
         if prompts.is_empty() {
-            return Ok(vec![]);
+            return Ok(PromptScores {
+                log_odds: vec![],
+                input_tokens: 0,
+            });
         }
 
         #[derive(Deserialize)]
-        struct ScoreItem {
-            index: usize,
-            score: f64,
+        struct CompletionChoice {
+            logprobs: Option<Logprobs>,
         }
         #[derive(Deserialize)]
-        struct ScoringResponse {
-            data: Vec<ScoreItem>,
+        struct Logprobs {
+            top_logprobs: Vec<Option<std::collections::HashMap<String, f64>>>,
+        }
+        #[derive(Deserialize)]
+        struct CompletionResponse {
+            choices: Vec<CompletionChoice>,
+            #[serde(default)]
+            usage: Option<Usage>,
+        }
+        #[derive(Deserialize)]
+        struct Usage {
+            prompt_tokens: usize,
         }
 
-        let response: ScoringResponse = self
+        let response: CompletionResponse = self
             .post_json(
-                "/generative_scoring",
+                "/v1/completions",
                 &json!({
                     "model": self.model,
-                    "query": "",
-                    "items": prompts,
-                    "label_token_ids": [
-                        self.boolean_tokens.true_token,
-                        self.boolean_tokens.false_token,
-                    ],
-                    "apply_softmax": true,
+                    "prompt": prompts,
+                    "max_tokens": 1,
+                    "temperature": 0,
+                    "logprobs": 1,
+                    "logprob_token_ids": [true_token, false_token],
+                    "return_tokens_as_token_ids": true,
                     "add_special_tokens": false,
                 }),
             )
             .await?;
 
-        if response.data.len() != prompts.len() {
+        if response.choices.len() != prompts.len() {
             return Err(InferenceError::backend(format!(
-                "vLLM returned {} scores for {} prompts",
-                response.data.len(),
+                "vLLM returned {} choices for {} prompts",
+                response.choices.len(),
                 prompts.len()
             )));
         }
 
-        // Convert probabilities to log-odds
-        let mut results = vec![0.0_f32; prompts.len()];
-        for item in response.data {
-            if item.index >= prompts.len() {
-                return Err(InferenceError::backend(format!(
-                    "vLLM returned out-of-range index {}",
-                    item.index
-                )));
-            }
-            results[item.index] = Self::probability_to_log_odds(item.score);
+        let true_key = format!("token_id:{true_token}");
+        let false_key = format!("token_id:{false_token}");
+
+        let mut results = Vec::with_capacity(prompts.len());
+        for (idx, choice) in response.choices.iter().enumerate() {
+            let logprobs = choice.logprobs.as_ref().ok_or_else(|| {
+                InferenceError::backend(format!(
+                    "vLLM prompt {idx}: response missing logprobs"
+                ))
+            })?;
+            let top = logprobs.top_logprobs.first().ok_or_else(|| {
+                InferenceError::backend(format!(
+                    "vLLM prompt {idx}: response missing top_logprobs"
+                ))
+            })?;
+            let scores = top.as_ref().ok_or_else(|| {
+                InferenceError::backend(format!("vLLM prompt {idx}: top_logprobs[0] is null"))
+            })?;
+            let true_lp = scores.get(&true_key).ok_or_else(|| {
+                InferenceError::backend(format!(
+                    "vLLM prompt {idx} returned no logprob for requested token id {true_token}"
+                ))
+            })?;
+            let false_lp = scores.get(&false_key).ok_or_else(|| {
+                InferenceError::backend(format!(
+                    "vLLM prompt {idx} returned no logprob for requested token id {false_token}"
+                ))
+            })?;
+            results.push((true_lp - false_lp) as f32);
         }
 
-        Ok(results)
-    }
+        // Record the number of prompt tokens for the whole batch, if the
+        // server reports it, to avoid a round-trip to /tokenize per prompt.
+        // vLLM sums `prompt_tokens` across the whole batched request.
+        let input_tokens = response
+            .usage
+            .as_ref()
+            .map(|u| u.prompt_tokens)
+            .unwrap_or(0);
 
-    /// Convert a probability to log-odds: `ln(p / (1-p))`.
-    fn probability_to_log_odds(p: f64) -> f32 {
-        const EPS: f64 = 1e-7;
-        let p = p.clamp(EPS, 1.0 - EPS);
-        (p.ln() - (-p).ln_1p()) as f32
+        Ok(PromptScores {
+            log_odds: results,
+            input_tokens,
+        })
     }
 }
 
@@ -258,9 +345,8 @@ impl VerdictBackend for VllmBackend {
         }
 
         // We need to flatten all prompts across groups, send them in one
-        // request, then unflatten back.
-        // vLLM's generative_scoring takes an array of items and returns
-        // indexed results — we can send all at once.
+        // request, then unflatten back. `/v1/completions` accepts an array of
+        // prompts and returns one choice per prompt.
         let mut flattened_indices: Vec<(usize, usize)> = Vec::new(); // (group_idx, candidate_idx)
         let mut flattened_prompts: Vec<String> = Vec::new();
 
@@ -271,32 +357,31 @@ impl VerdictBackend for VllmBackend {
             }
         }
 
-        let all_scores = self.score_prompts(&flattened_prompts).await?;
+        let scores = self
+            .score_prompts(
+                &flattened_prompts,
+                self.boolean_tokens.true_token,
+                self.boolean_tokens.false_token,
+            )
+            .await?;
 
-        if all_scores.len() != flattened_prompts.len() {
+        if scores.log_odds.len() != flattened_prompts.len() {
             return Err(InferenceError::internal(format!(
                 "vLLM returned {} scores but expected {}",
-                all_scores.len(),
+                scores.log_odds.len(),
                 flattened_prompts.len()
             )));
         }
 
-        // Get actual token counts via /tokenize
-        let mut input_tokens = 0usize;
-        for prompt in &flattened_prompts {
-            let tokens = self.tokenize(prompt).await?;
-            input_tokens = input_tokens.saturating_add(tokens.len());
-        }
-
         // Unflatten back into groups
         let mut log_odds: Vec<Vec<f32>> = groups.iter().map(|g| Vec::with_capacity(g.len())).collect();
-        for ((gi, _), score) in flattened_indices.into_iter().zip(all_scores) {
+        for ((gi, _), score) in flattened_indices.into_iter().zip(scores.log_odds) {
             log_odds[gi].push(score);
         }
 
         let result = ScoreResult {
             log_odds,
-            input_tokens,
+            input_tokens: scores.input_tokens,
         };
         check_shape_contract(groups, &result);
         Ok(result)
@@ -315,78 +400,116 @@ impl VerdictBackend for VllmBackend {
 mod tests {
     use super::*;
 
-    #[test]
-    fn probability_to_log_odds_for_0_5() {
-        let lo = VllmBackend::probability_to_log_odds(0.5);
-        assert!((lo).abs() < 1e-4, "log-odds of 0.5 should be ~0, got {lo}");
+    /// Parse a vLLM `/v1/completions` response and reduce it to log-odds.
+    /// Mirrors the logic inside `score_prompts` so it can be unit-tested
+    /// without a live HTTP server.
+    fn completions_to_log_odds(
+        raw: &str,
+        true_token: u32,
+        false_token: u32,
+    ) -> Result<Vec<f32>, InferenceError> {
+        #[derive(Deserialize)]
+        struct CompletionChoice {
+            logprobs: Option<Logprobs>,
+        }
+        #[derive(Deserialize)]
+        struct Logprobs {
+            top_logprobs: Vec<Option<std::collections::HashMap<String, f64>>>,
+        }
+        #[derive(Deserialize)]
+        struct CompletionResponse {
+            choices: Vec<CompletionChoice>,
+        }
+
+        let response: CompletionResponse = serde_json::from_str(raw)
+            .map_err(|e| InferenceError::backend(format!("bad fixture: {e}")))?;
+
+        let true_key = format!("token_id:{true_token}");
+        let false_key = format!("token_id:{false_token}");
+
+        let mut out = Vec::with_capacity(response.choices.len());
+        for (idx, choice) in response.choices.iter().enumerate() {
+            let logprobs = choice
+                .logprobs
+                .as_ref()
+                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing logprobs")))?;
+            let top = logprobs
+                .top_logprobs
+                .first()
+                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing top_logprobs")))?;
+            let scores = top
+                .as_ref()
+                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: top_logprobs[0] is null")))?;
+            let true_lp = scores
+                .get(&true_key)
+                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing {true_key}")))?;
+            let false_lp = scores
+                .get(&false_key)
+                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing {false_key}")))?;
+            out.push((true_lp - false_lp) as f32);
+        }
+        Ok(out)
     }
 
     #[test]
-    fn probability_to_log_odds_for_0_9() {
-        let lo = VllmBackend::probability_to_log_odds(0.9);
-        assert!((lo - 2.1972).abs() < 0.01, "log-odds of 0.9 should be ~2.197, got {lo}");
+    fn parses_completion_logprobs() {
+        // `token_id:110` is "true", `token_id:90` is "false". The sampled
+        // token (id 110) is also present, plus unrelated IDs — the parser must
+        // look up by key, not by position.
+        let raw = r#"{"choices":[
+            {"logprobs":{"top_logprobs":[
+                {"token_id:110":-0.1141762,"token_id:90":-10.1141758,"token_id:7":-17.7860508}
+            ]}},
+            {"logprobs":{"top_logprobs":[
+                {"token_id:90":-1.0,"token_id:110":-5.0,"token_id:999":-20.0}
+            ]}}
+        ]}"#;
+        let scores = completions_to_log_odds(raw, 110, 90).unwrap();
+        assert_eq!(scores.len(), 2);
+        assert!((scores[0] - (-0.1141762 - -10.1141758)).abs() < 1e-4);
+        assert!((scores[1] - (-5.0 - -1.0)).abs() < 1e-4); // -4.0
     }
 
     #[test]
-    fn probability_to_log_odds_for_0_1() {
-        let lo = VllmBackend::probability_to_log_odds(0.1);
-        assert!((lo - (-2.1972)).abs() < 0.01, "log-odds of 0.1 should be ~-2.197, got {lo}");
+    fn completion_missing_true_token_is_error() {
+        // Ask for true=110 but the response only contains false=90.
+        let raw = r#"{"choices":[
+            {"logprobs":{"top_logprobs":[{"token_id:90":-1.0}]}}
+        ]}"#;
+        let err = completions_to_log_odds(raw, 110, 90).unwrap_err();
+        assert!(err.message.contains("110"), "got: {}", err.message);
     }
 
     #[test]
-    fn probability_to_log_odds_clamps_extremes() {
-        let lo_zero = VllmBackend::probability_to_log_odds(0.0);
-        assert!(lo_zero.is_finite());
-        assert!(lo_zero < -10.0);
-
-        let lo_one = VllmBackend::probability_to_log_odds(1.0);
-        assert!(lo_one.is_finite());
-        assert!(lo_one > 10.0);
+    fn completion_missing_logprobs_is_error() {
+        let raw = r#"{"choices":[{"logprobs":null}]}"#;
+        assert!(completions_to_log_odds(raw, 110, 90).is_err());
     }
 
     #[test]
-    fn probability_to_log_odds_symmetric() {
-        let lo_p = VllmBackend::probability_to_log_odds(0.3);
-        let lo_q = VllmBackend::probability_to_log_odds(0.7);
-        assert!((lo_p + lo_q).abs() < 0.01);
+    fn completion_missing_top_logprobs_is_error() {
+        let raw = r#"{"choices":[{"logprobs":{"top_logprobs":[]}}]}"#;
+        assert!(completions_to_log_odds(raw, 110, 90).is_err());
     }
 
     #[test]
-    fn generative_scoring_request_body_shape() {
+    fn completions_request_body_shape() {
         let body = serde_json::to_value(json!({
-            "model": "Qwen/Qwen3.5-4B",
-            "query": "",
-            "items": ["prompt A", "prompt B"],
-            "label_token_ids": [2898, 3934],
-            "apply_softmax": true,
+            "model": "DeepSeek-V4-Flash",
+            "prompt": ["prompt A", "prompt B"],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": 1,
+            "logprob_token_ids": [110, 90],
+            "return_tokens_as_token_ids": true,
             "add_special_tokens": false,
         }))
         .unwrap();
-        assert_eq!(body["items"].as_array().unwrap().len(), 2);
-        assert_eq!(body["label_token_ids"], json!([2898, 3934]));
-        assert!(body["apply_softmax"].as_bool().unwrap());
-    }
-
-    #[test]
-    fn parses_generative_scoring_response() {
-        #[derive(Deserialize)]
-        struct ScoreItem {
-            index: usize,
-            score: f64,
-        }
-        #[derive(Deserialize)]
-        struct ScoringResponse {
-            data: Vec<ScoreItem>,
-        }
-
-        let json = r#"{"data":[
-            {"index": 0, "score": 0.91},
-            {"index": 1, "score": 0.27},
-            {"index": 2, "score": 0.04}
-        ]}"#;
-        let resp: ScoringResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.data.len(), 3);
-        assert_eq!(resp.data[0].index, 0);
-        assert!((resp.data[0].score - 0.91).abs() < 1e-6);
+        assert_eq!(body["prompt"].as_array().unwrap().len(), 2);
+        assert_eq!(body["max_tokens"], json!(1));
+        assert_eq!(body["logprob_token_ids"], json!([110, 90]));
+        assert_eq!(body["logprobs"], json!(1));
+        assert_eq!(body["return_tokens_as_token_ids"], json!(true));
+        assert_eq!(body["add_special_tokens"], json!(false));
     }
 }

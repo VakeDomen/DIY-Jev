@@ -1,5 +1,5 @@
-use std::{net::SocketAddr, num::NonZeroU32, path::Path};
 use std::time::Duration;
+use std::{net::SocketAddr, num::NonZeroU32, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -49,7 +49,6 @@ pub struct Cli {
     pub system_prompt: Option<String>,
 
     // ---- llama-specific flags ----
-
     /// Context size (llama.cpp only).
     #[arg(long, env = "JEV_CONTEXT_SIZE")]
     pub context_size: Option<u32>,
@@ -186,13 +185,15 @@ pub enum BackendKind {
 /// Returns `None` if the user didn't specify (interactive fallback).
 pub fn resolve_backend_kind() -> Result<Option<(BackendKind, bool)>> {
     let env_backend = std::env::var("JEV_BACKEND").ok();
-    let has_model = std::env::var_os("JEV_MODEL_PATH").is_some()
-        || std::env::var_os("JEV_HF_REPO").is_some();
+    let has_model =
+        std::env::var_os("JEV_MODEL_PATH").is_some() || std::env::var_os("JEV_HF_REPO").is_some();
 
     match env_backend.as_deref() {
         Some("vllm") => Ok(Some((BackendKind::Vllm, false))),
         Some("llama") => Ok(Some((BackendKind::Llama, has_model))),
-        Some(other) => anyhow::bail!("unknown JEV_BACKEND={other:?}; expected \"llama\" or \"vllm\""),
+        Some(other) => {
+            anyhow::bail!("unknown JEV_BACKEND={other:?}; expected \"llama\" or \"vllm\"")
+        }
         None => {
             if has_model {
                 Ok(Some((BackendKind::Llama, true)))
@@ -383,7 +384,7 @@ impl Config {
                 }
                 parsed
             }
-            Err(_) => 64,
+            Err(_) => 128,
         };
 
         let ubatch_size = match std::env::var("JEV_UBATCH_SIZE") {
@@ -465,7 +466,9 @@ impl Config {
     /// nor environment specifies a backend, enters interactive model selection.
     pub fn from_cli_or_env(cli: Cli) -> Result<Self> {
         // Determine backend kind: CLI > env > interactive
-        let backend_str = cli.backend.clone()
+        let backend_str = cli
+            .backend
+            .clone()
             .or_else(|| std::env::var("JEV_BACKEND").ok());
 
         // Check if we have an explicit model source
@@ -473,10 +476,12 @@ impl Config {
             || std::env::var_os("JEV_MODEL_PATH").is_some()
             || std::env::var_os("JEV_HF_REPO").is_some()
             || cli.hf_repo.is_some();
-        let hf_repo = cli.hf_repo
+        let hf_repo = cli
+            .hf_repo
             .clone()
             .or_else(|| std::env::var("JEV_HF_REPO").ok());
-        let hf_filename = cli.hf_filename
+        let hf_filename = cli
+            .hf_filename
             .clone()
             .or_else(|| std::env::var("JEV_HF_FILENAME").ok());
         let hf_configured = hf_repo.is_some() || hf_filename.is_some();
@@ -488,14 +493,22 @@ impl Config {
         match backend_str.as_deref() {
             Some("vllm") => {
                 // CLI > env for vLLM-specific settings
-                let base_url = cli.url.clone()
+                let base_url = cli
+                    .url
+                    .clone()
                     .or_else(|| std::env::var("JEV_VLLM_URL").ok())
                     .context("--url or JEV_VLLM_URL must be set for vLLM backend")?;
-                let model = cli.model.clone()
+                let model = cli
+                    .model
+                    .clone()
                     .or_else(|| std::env::var("JEV_MODEL").ok())
                     .or_else(|| std::env::var("JEV_VLLM_MODEL").ok())
-                    .context("--model, JEV_MODEL, or JEV_VLLM_MODEL must be set for vLLM backend")?;
-                let api_key = cli.api_key.clone()
+                    .context(
+                        "--model, JEV_MODEL, or JEV_VLLM_MODEL must be set for vLLM backend",
+                    )?;
+                let api_key = cli
+                    .api_key
+                    .clone()
                     .or_else(|| std::env::var("JEV_VLLM_API_KEY").ok());
                 let timeout_secs = std::env::var("JEV_VLLM_TIMEOUT")
                     .ok()
@@ -513,7 +526,9 @@ impl Config {
             }
             Some("llama") | None if model_path_set || hf_configured => {
                 // Llama with explicit model (CLI or env)
-                let model_path = cli.model.clone()
+                let model_path = cli
+                    .model
+                    .clone()
                     .or_else(|| std::env::var("JEV_MODEL_PATH").ok())
                     .or_else(|| hf_filename.as_ref().map(|f| format!("./models/{f}")))
                     .unwrap_or_else(|| "./models/qwen3-4b-instruct-Q4_K_M.gguf".into());
@@ -521,14 +536,21 @@ impl Config {
                 let mut config = Self::build_common(&cli)?;
                 config.backend = Some(BackendConfig::Llama(LlamaBackendConfig {
                     model_path,
-                    context_size: Self::resolve_nonzero(cli.context_size, "JEV_CONTEXT_SIZE", LlamaBackendConfig::DEFAULT_CONTEXT)?,
-                    batch_size: cli.batch_size
+                    context_size: Self::resolve_nonzero(
+                        cli.context_size,
+                        "JEV_CONTEXT_SIZE",
+                        LlamaBackendConfig::DEFAULT_CONTEXT,
+                    )?,
+                    batch_size: cli
+                        .batch_size
                         .or_else(|| env_var_parse("JEV_BATCH_SIZE"))
                         .unwrap_or(LlamaBackendConfig::DEFAULT_BATCH),
-                    ubatch_size: cli.ubatch_size
+                    ubatch_size: cli
+                        .ubatch_size
                         .or_else(|| env_var_parse("JEV_UBATCH_SIZE"))
                         .unwrap_or(LlamaBackendConfig::DEFAULT_UBATCH),
-                    n_seq_max: cli.n_seq_max
+                    n_seq_max: cli
+                        .n_seq_max
                         .or_else(|| env_var_parse("JEV_N_SEQ_MAX"))
                         .unwrap_or(LlamaBackendConfig::DEFAULT_N_SEQ_MAX),
                 }));
@@ -560,11 +582,17 @@ impl Config {
         let bind_addr = cli.bind;
 
         // Model path (used by legacy path and for identity derivation)
-        let explicit_model_path = cli.model.clone()
+        let explicit_model_path = cli
+            .model
+            .clone()
             .or_else(|| std::env::var("JEV_MODEL_PATH").ok());
-        let hf_filename = cli.hf_filename.clone()
+        let hf_filename = cli
+            .hf_filename
+            .clone()
             .or_else(|| std::env::var("JEV_HF_FILENAME").ok());
-        let hf_repo = cli.hf_repo.clone()
+        let hf_repo = cli
+            .hf_repo
+            .clone()
             .or_else(|| std::env::var("JEV_HF_REPO").ok());
         anyhow::ensure!(
             hf_repo.is_some() == hf_filename.is_some(),
@@ -576,37 +604,39 @@ impl Config {
             None => "./models/qwen3-4b-instruct-Q4_K_M.gguf".to_owned(),
         });
 
-        let context_size = Self::resolve_nonzero(
-            cli.context_size,
-            "JEV_CONTEXT_SIZE",
-            32_768,
-        )?;
+        let context_size = Self::resolve_nonzero(cli.context_size, "JEV_CONTEXT_SIZE", 32_768)?;
 
-        let batch_size = cli.batch_size
+        let batch_size = cli
+            .batch_size
             .or_else(|| env_var_parse("JEV_BATCH_SIZE"))
             .unwrap_or(8192);
         anyhow::ensure!(batch_size > 0, "batch_size must be positive");
 
-        let ubatch_size = cli.ubatch_size
+        let ubatch_size = cli
+            .ubatch_size
             .or_else(|| env_var_parse("JEV_UBATCH_SIZE"))
             .unwrap_or(512);
 
-        let max_queue = cli.max_queue
+        let max_queue = cli
+            .max_queue
             .or_else(|| env_var_parse("JEV_MAX_QUEUE"))
             .unwrap_or(64);
         anyhow::ensure!(max_queue > 0, "max_queue must be positive");
 
-        let max_questions = cli.max_questions
+        let max_questions = cli
+            .max_questions
             .or_else(|| env_var_parse("JEV_MAX_QUESTIONS"))
             .unwrap_or(100);
         anyhow::ensure!(max_questions > 0, "max_questions must be positive");
 
-        let n_seq_max = cli.n_seq_max
+        let n_seq_max = cli
+            .n_seq_max
             .or_else(|| env_var_parse("JEV_N_SEQ_MAX"))
             .unwrap_or(64);
         anyhow::ensure!(n_seq_max > 0, "n_seq_max must be positive");
 
-        let request_batch_size = cli.request_batch_size
+        let request_batch_size = cli
+            .request_batch_size
             .or_else(|| env_var_parse("JEV_REQUEST_BATCH_SIZE"))
             .unwrap_or(3);
         anyhow::ensure!(
@@ -614,10 +644,14 @@ impl Config {
             "request_batch_size must be 1..256"
         );
 
-        let request_batch_wait_ms = cli.request_batch_wait_ms
+        let request_batch_wait_ms = cli
+            .request_batch_wait_ms
             .or_else(|| env_var_parse("JEV_REQUEST_BATCH_WAIT_MS"))
             .unwrap_or(3);
-        anyhow::ensure!(request_batch_wait_ms <= 1000, "request_batch_wait_ms must be <= 1000");
+        anyhow::ensure!(
+            request_batch_wait_ms <= 1000,
+            "request_batch_wait_ms must be <= 1000"
+        );
 
         let hf_download = HfDownloadConfig::from_env();
 
@@ -639,11 +673,10 @@ impl Config {
 
         let hf_configured = hf_repo.is_some();
 
-        let system_prompt_text = cli.system_prompt.clone()
-            .or_else(|| {
-                let env = std::env::var("JEV_SYSTEM_PROMPT").ok()?;
-                if env.is_empty() { None } else { Some(env) }
-            });
+        let system_prompt_text = cli.system_prompt.clone().or_else(|| {
+            let env = std::env::var("JEV_SYSTEM_PROMPT").ok()?;
+            if env.is_empty() { None } else { Some(env) }
+        });
 
         let download_model = hf_configured;
 
@@ -668,16 +701,11 @@ impl Config {
     }
 
     /// Resolve a `NonZeroU32` from CLI > env > default.
-    fn resolve_nonzero(
-        cli_val: Option<u32>,
-        env_key: &str,
-        default: u32,
-    ) -> Result<NonZeroU32> {
+    fn resolve_nonzero(cli_val: Option<u32>, env_key: &str, default: u32) -> Result<NonZeroU32> {
         let raw = cli_val
             .or_else(|| env_var_parse(env_key))
             .unwrap_or(default);
-        NonZeroU32::new(raw)
-            .with_context(|| format!("{env_key} must be positive, got {raw}"))
+        NonZeroU32::new(raw).with_context(|| format!("{env_key} must be positive, got {raw}"))
     }
 
     /// Select a local model or ask for a Hugging Face GGUF when no model

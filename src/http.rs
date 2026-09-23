@@ -3,6 +3,7 @@
 //! Routes and handlers that serve the Jev-compatible API.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     Json, Router,
@@ -215,6 +216,11 @@ async fn handle_evaluate(
     let request = body.into_input();
     let model_identity = state.model_identity.clone();
 
+    // Per-request timing: measured from just before inference begins (after
+    // parse + validation) until the response is ready, so different backends
+    // and request sizes show distinct durations in the logs.
+    let started = Instant::now();
+
     match &state.backend {
         AppBackend::Worker(worker) => {
             // Legacy path: send through the worker channel.
@@ -241,6 +247,12 @@ async fn handle_evaluate(
                 response.model = model_identity;
             }
 
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            match &inference_result {
+                Ok(_) => tracing::info!(status = "ok", backend = "llama-worker", total_ms = format_ms(total_ms), "request completed"),
+                Err(e) => tracing::info!(status = "error", backend = "llama-worker", total_ms = format_ms(total_ms), error = %e.message, "request completed"),
+            }
+
             inference_result.map(Json).map_err(|err| ApiError {
                 status: err.map_status(),
                 message: err.message,
@@ -248,22 +260,47 @@ async fn handle_evaluate(
             })
         }
         AppBackend::Backend(backend) => {
-            // New path: use the evaluator + VerdictBackend.
-            let response = evaluator::evaluate_with_backend(
+            // New path: use the evaluator + VerdictBackend, capturing per-phase
+            // timings so the request log shows each subsection plus the total.
+            let mut timings = evaluator::RequestTimings::default();
+            let result = evaluator::evaluate_with_backend_timed(
                 backend.as_ref(),
                 request,
                 &model_identity,
                 &state.system_noul,
                 &state.system_choice,
+                Some(&mut timings),
             )
-            .await
-            .map(Json)
-            .map_err(|err| ApiError {
+            .await;
+
+            let total_ms = started.elapsed().as_secs_f64() * 1000.0;
+            match &result {
+                Ok(_) => tracing::info!(
+                    status = "ok",
+                    backend = "verdict-backend",
+                    total_ms = format_ms(total_ms),
+                    prepare_ms = format_ms(timings.prepare_ms),
+                    score_ms = format_ms(timings.score_ms),
+                    convert_ms = format_ms(timings.convert_ms),
+                    "request completed"
+                ),
+                Err(e) => tracing::info!(
+                    status = "error",
+                    backend = "verdict-backend",
+                    total_ms = format_ms(total_ms),
+                    prepare_ms = format_ms(timings.prepare_ms),
+                    score_ms = format_ms(timings.score_ms),
+                    convert_ms = format_ms(timings.convert_ms),
+                    error = %e.message,
+                    "request completed"
+                ),
+            }
+
+            result.map(Json).map_err(|err| ApiError {
                 status: err.map_status(),
                 message: err.message,
                 kind: err.kind,
-            })?;
-            Ok(response)
+            })
         }
     }
 }
@@ -271,6 +308,12 @@ async fn handle_evaluate(
 #[derive(Serialize)]
 struct ModelResponse {
     model: String,
+}
+
+/// Format a millisecond duration to two decimal places for log output, so
+/// timing lines stay compact and readable (e.g. `123.45`, `0.04`).
+fn format_ms(ms: f64) -> String {
+    format!("{ms:.2}")
 }
 
 async fn handle_model(State(state): State<AppState>) -> Json<ModelResponse> {

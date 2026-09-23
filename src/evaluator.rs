@@ -35,6 +35,7 @@
 //! | Score    | 1       | N (options)       | `softmax(log_odds)`, weighted sum|
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use serde_json::Value;
 
@@ -332,6 +333,40 @@ pub async fn evaluate_with_backend(
     system_noul: &str,
     system_choice: &str,
 ) -> Result<EvaluateResponse, InferenceError> {
+    evaluate_with_backend_timed(backend, request, model_identity, system_noul, system_choice, None)
+        .await
+}
+
+/// Per-phase timings for a single evaluate request, split into the natural
+/// stages of [`evaluate_with_backend`]:
+///
+/// * `prepare_ms` — render state and prepare all questions (pure CPU).
+/// * `score_ms` — the `VerdictBackend::score()` call (for vLLM this is the
+///   HTTP round-trip and dominates the total).
+/// * `convert_ms` — converting log-odds into answers.
+/// * `total_ms` — everything from function entry to the returned response.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RequestTimings {
+    pub prepare_ms: f64,
+    pub score_ms: f64,
+    pub convert_ms: f64,
+    pub total_ms: f64,
+}
+
+/// Like [`evaluate_with_backend`], but also records per-phase timing into
+/// `timings` when provided (used by the HTTP layer for per-request logging).
+///
+/// The non-timed [`evaluate_with_backend`] delegates here with `None`, so
+/// existing callers and tests are unaffected.
+pub async fn evaluate_with_backend_timed(
+    backend: &dyn VerdictBackend,
+    request: EvaluateRequest,
+    model_identity: &str,
+    system_noul: &str,
+    system_choice: &str,
+    mut timings: Option<&mut RequestTimings>,
+) -> Result<EvaluateResponse, InferenceError> {
+    let started = Instant::now();
     if request.questions.is_empty() {
         return Err(InferenceError::validation("questions must not be empty"));
     }
@@ -339,6 +374,7 @@ pub async fn evaluate_with_backend(
     let state = render_state(&request.state)?;
 
     // Phase 1: Prepare all questions
+    let prepare_start = Instant::now();
     let mut prepared: Vec<PreparedQuestion> = Vec::with_capacity(request.questions.len());
     for (name, question) in &request.questions {
         question
@@ -347,12 +383,16 @@ pub async fn evaluate_with_backend(
         let pq = prepare_question(name, question, &state, system_noul, system_choice)?;
         prepared.push(pq);
     }
+    let prepare_ms = prepare_start.elapsed().as_secs_f64() * 1000.0;
 
     // Phase 2: Score via backend
+    let score_start = Instant::now();
     let groups = questions_to_groups(&prepared);
     let result = backend.score(&groups).await?;
+    let score_ms = score_start.elapsed().as_secs_f64() * 1000.0;
 
     // Phase 3: Convert log-odds to answers
+    let convert_start = Instant::now();
     let mut answers = BTreeMap::new();
     let total_input = result.input_tokens;
 
@@ -362,6 +402,14 @@ pub async fn evaluate_with_backend(
     }
 
     let output_tokens = answers.len();
+    let convert_ms = convert_start.elapsed().as_secs_f64() * 1000.0;
+
+    if let Some(t) = timings.as_deref_mut() {
+        t.prepare_ms = prepare_ms;
+        t.score_ms = score_ms;
+        t.convert_ms = convert_ms;
+        t.total_ms = started.elapsed().as_secs_f64() * 1000.0;
+    }
 
     Ok(EvaluateResponse {
         model: model_identity.to_owned(),
