@@ -10,15 +10,27 @@ FROM nvidia/cuda:12.0.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    cmake \
-    curl \
-    git \
-    pkg-config \
-    clang \
-    libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Apt mirror metadata can be stale (transient 404s during package install),
+# so clear the index, clean the cache, and retry the whole transaction a few
+# times before giving up.
+RUN set -eux; \
+    for attempt in 1 2 3; do \
+        rm -rf /var/lib/apt/lists/*; \
+        apt-get clean; \
+        apt-get update -o Acquire::Retries=5 && \
+        apt-get install -y --no-install-recommends \
+            build-essential \
+            cmake \
+            curl \
+            git \
+            pkg-config \
+            clang \
+            libclang-dev && \
+        break; \
+        echo "apt failed, retrying..."; \
+        sleep 5; \
+    done; \
+    rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal
