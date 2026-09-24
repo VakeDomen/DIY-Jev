@@ -1,0 +1,10 @@
+target/
+.git/
+models/
+*.gguf
+benchmarks/data/
+benchmarks/.deps/
+benchmarks/results/
+.env
+.env.*
+!.env.example

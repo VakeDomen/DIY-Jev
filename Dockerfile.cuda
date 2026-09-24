@@ -1,0 +1,36 @@
+# DIY-Jev CUDA image.
+#
+# Builds the binary inside the container so the host only needs a working
+# NVIDIA driver + Docker + the NVIDIA Container Toolkit — no Rust, CMake,
+# nvcc, or CUDA runtime on the host. GGUF models are NOT baked in; they live
+# on a persistent host volume mounted at /app/models (i.e. DIY-Jev's native
+# ./models directory), so the interactive picker and in-app Hugging Face
+# download both work unchanged.
+FROM nvidia/cuda:12.0.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    curl \
+    git \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --profile minimal
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+COPY . .
+
+RUN cargo build --release
+
+ENV JEV_BIND_ADDR=0.0.0.0:8080
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/target/release/diy-jev"]

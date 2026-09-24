@@ -73,6 +73,75 @@ For unattended startup, configure either an existing `JEV_MODEL_PATH`, or both
 `JEV_HF_REPO` and `JEV_HF_FILENAME`. The server listens on
 `http://127.0.0.1:8080`.
 
+### Docker / CUDA
+
+The `Dockerfile.cuda` image builds DIY-Jev (Rust + CMake + CUDA) inside the
+container, so a host machine only needs a working NVIDIA driver, Docker, and
+the NVIDIA Container Toolkit — no Rust, CMake, `nvcc`, or CUDA runtime. GGUF
+models are NOT baked into the image; they live on a persistent host volume so
+the interactive picker and in-app Hugging Face download work unchanged.
+
+The quickest way to run is the `run.sh` launcher. It checks Docker and GPU
+access, builds the image, and starts the server with a writable `./models`
+volume:
+
+```sh
+./run.sh
+```
+
+`run.sh` is just the steps below bundled together. It respects the
+`DIY_JEV_IMAGE`, `DIY_JEV_PORT`, and `DIY_JEV_MODELS_DIR` environment variables,
+and forwards extra arguments to the container entrypoint (so, for example,
+`./run.sh` with no model runs the interactive picker).
+
+Verify the host can reach the GPU before continuing:
+
+```sh
+docker run --rm --gpus all \
+  nvidia/cuda:12.0.1-base-ubuntu22.04 \
+  nvidia-smi
+```
+
+Build the image (compilation happens here, not on the host):
+
+```sh
+docker build \
+  -f Dockerfile.cuda \
+  -t diy-jev:cuda .
+```
+
+Run with the interactive model picker (the same result as `./run.sh`, shown
+step-by-step). Inside the image `WORKDIR` is `/app`, so DIY-Jev's native
+`./models` is `/app/models`. Mount a host directory there as a **writable**
+volume — models persist on the host across container restarts:
+
+```sh
+mkdir -p ./models
+
+docker run --rm -it \
+  --gpus all \
+  -p 8080:8080 \
+  -v "$PWD/models:/app/models" \
+  diy-jev:cuda
+```
+
+Startup scans `/app/models` (the host's `./models`) and lists any local GGUF
+files. Choose a number, or enter `d` to download a Hugging Face GGUF — the file
+is written to `/app/models`, i.e. the host's `./models`, so it survives deleting
+the container.
+
+For unattended startup, skip the picker by pointing `JEV_MODEL_PATH` at a
+concrete file inside the mounted directory:
+
+```sh
+docker run --rm \
+  --gpus all \
+  -p 8080:8080 \
+  -v "$PWD/models:/app/models" \
+  -e JEV_MODEL_PATH=/app/models/Qwen3-4B.gguf \
+  diy-jev:cuda
+```
+
 ## Benchmark
 
 ![Combined benchmark radar comparing DIY Jev models with published OpenJev results](benchmarks/charts/combined-radar.png)
