@@ -29,6 +29,7 @@ use async_trait::async_trait;
 
 use serde::Deserialize;
 use serde_json::json;
+use tracing::info;
 
 use crate::backend::{
     BooleanTokenPair, ScoreGroup, ScoreResult, VerdictBackend, check_shape_contract,
@@ -114,14 +115,9 @@ impl VllmBackend {
         };
 
         // Resolve boolean tokens via /tokenize
-        let tokens = backend
-            .resolve_boolean_tokens()
-            .await
-            .map_err(|e| {
-                InferenceError::backend(format!(
-                    "failed to resolve boolean tokens from vLLM: {e}"
-                ))
-            })?;
+        let tokens = backend.resolve_boolean_tokens().await.map_err(|e| {
+            InferenceError::backend(format!("failed to resolve boolean tokens from vLLM: {e}"))
+        })?;
         backend.boolean_tokens = tokens;
         backend.is_ready = true;
 
@@ -151,10 +147,12 @@ impl VllmBackend {
         if let Some((header, value)) = self.auth_header() {
             req = req.header(header.as_str(), value.as_str());
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| InferenceError::backend(format!("vLLM request to {url} failed: {}", describe_reqwest_error(&e))))?;
+        let resp = req.send().await.map_err(|e| {
+            InferenceError::backend(format!(
+                "vLLM request to {url} failed: {}",
+                describe_reqwest_error(&e)
+            ))
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -198,6 +196,12 @@ impl VllmBackend {
 
         let true_tokens = self.tokenize(&format!("{prefix}true")).await?;
         let false_tokens = self.tokenize(&format!("{prefix}false")).await?;
+
+        info!(
+            "Resolved tokens: true ({:#?}) | false ({:#?})",
+            check_word("true", &true_tokens)?,
+            check_word("false", &false_tokens)?
+        );
 
         Ok(BooleanTokenPair {
             true_token: check_word("true", &true_tokens)?,
@@ -296,14 +300,10 @@ impl VllmBackend {
         let mut results = Vec::with_capacity(prompts.len());
         for (idx, choice) in response.choices.iter().enumerate() {
             let logprobs = choice.logprobs.as_ref().ok_or_else(|| {
-                InferenceError::backend(format!(
-                    "vLLM prompt {idx}: response missing logprobs"
-                ))
+                InferenceError::backend(format!("vLLM prompt {idx}: response missing logprobs"))
             })?;
             let top = logprobs.top_logprobs.first().ok_or_else(|| {
-                InferenceError::backend(format!(
-                    "vLLM prompt {idx}: response missing top_logprobs"
-                ))
+                InferenceError::backend(format!("vLLM prompt {idx}: response missing top_logprobs"))
             })?;
             let scores = top.as_ref().ok_or_else(|| {
                 InferenceError::backend(format!("vLLM prompt {idx}: top_logprobs[0] is null"))
@@ -374,7 +374,8 @@ impl VerdictBackend for VllmBackend {
         }
 
         // Unflatten back into groups
-        let mut log_odds: Vec<Vec<f32>> = groups.iter().map(|g| Vec::with_capacity(g.len())).collect();
+        let mut log_odds: Vec<Vec<f32>> =
+            groups.iter().map(|g| Vec::with_capacity(g.len())).collect();
         for ((gi, _), score) in flattened_indices.into_iter().zip(scores.log_odds) {
             log_odds[gi].push(score);
         }
@@ -429,23 +430,21 @@ mod tests {
 
         let mut out = Vec::with_capacity(response.choices.len());
         for (idx, choice) in response.choices.iter().enumerate() {
-            let logprobs = choice
-                .logprobs
-                .as_ref()
-                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing logprobs")))?;
-            let top = logprobs
-                .top_logprobs
-                .first()
-                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing top_logprobs")))?;
-            let scores = top
-                .as_ref()
-                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: top_logprobs[0] is null")))?;
-            let true_lp = scores
-                .get(&true_key)
-                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing {true_key}")))?;
-            let false_lp = scores
-                .get(&false_key)
-                .ok_or_else(|| InferenceError::backend(format!("prompt {idx}: missing {false_key}")))?;
+            let logprobs = choice.logprobs.as_ref().ok_or_else(|| {
+                InferenceError::backend(format!("prompt {idx}: missing logprobs"))
+            })?;
+            let top = logprobs.top_logprobs.first().ok_or_else(|| {
+                InferenceError::backend(format!("prompt {idx}: missing top_logprobs"))
+            })?;
+            let scores = top.as_ref().ok_or_else(|| {
+                InferenceError::backend(format!("prompt {idx}: top_logprobs[0] is null"))
+            })?;
+            let true_lp = scores.get(&true_key).ok_or_else(|| {
+                InferenceError::backend(format!("prompt {idx}: missing {true_key}"))
+            })?;
+            let false_lp = scores.get(&false_key).ok_or_else(|| {
+                InferenceError::backend(format!("prompt {idx}: missing {false_key}"))
+            })?;
             out.push((true_lp - false_lp) as f32);
         }
         Ok(out)
